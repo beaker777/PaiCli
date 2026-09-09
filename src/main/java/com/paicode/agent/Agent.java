@@ -1,0 +1,108 @@
+package com.paicode.agent;
+
+import com.paicode.llm.DTO.ChatResponse;
+import com.paicode.llm.DTO.Message;
+import com.paicode.llm.DTO.ToolCall;
+import com.paicode.llm.DeepSeekClient;
+import com.paicode.tool.ToolRegistry;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * @Author beaker
+ * @Date 2026/9/9 19:27
+ * @Description TODO
+ */
+public class Agent {
+
+    private final DeepSeekClient llmClient;
+    private final ToolRegistry toolRegistry;
+    private final List<Message> conversationHistory;
+
+    // 最大迭代次数
+    private static final int MAX_ITERATIONS = 10;
+
+    // 系统提示词
+    private static final String SYSTEM_PROMPT = """
+            你是一个智能编程助手，可以帮助用户完成各种任务。
+
+            你可以使用以下工具来完成任务：
+            1. read_file - 读取文件内容
+            2. write_file - 写入文件内容
+            3. list_dir - 列出目录内容
+            4. execute_command - 执行Shell命令
+            5. create_project - 创建新项目结构
+
+            当需要操作文件、执行命令或创建项目时，请使用工具调用。
+            使用工具后，根据工具返回的结果继续思考下一步行动。
+
+            请用中文回复用户。
+            """;
+
+    public Agent(String apikey) {
+        llmClient = new DeepSeekClient(apikey);
+        toolRegistry = new ToolRegistry();
+        conversationHistory = new ArrayList<>();
+
+        // 添加系统提示词
+        conversationHistory.add(Message.system(SYSTEM_PROMPT));
+    }
+
+    // 运行
+    public String run(String userInput) {
+        // 将用户输入添加到历史
+        conversationHistory.add(Message.user(userInput));
+
+        System.out.println("thinking...\n");
+
+        int iteration = 0;
+        while (iteration < MAX_ITERATIONS) {
+            iteration ++;
+
+            try {
+                // 调用模型
+                ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools());
+
+                if (response.hasToolCalls()) {
+                    // 调用工具
+                    conversationHistory.add(Message.assistant(response.content(), response.toolCalls()));
+
+                    for (ToolCall toolCall : response.toolCalls()) {
+                        String name = toolCall.function().name();
+                        String arguments = toolCall.function().arguments();
+
+                        System.out.println("执行工具: " + name);
+                        System.out.println("工具参数: " + arguments);
+
+                        String toolResult = toolRegistry.executeTool(name, arguments);
+
+                        System.out.println("调用结果: " +
+                                toolResult.substring(0, Math.min(200, toolResult.length())) +
+                                (toolResult.length() > 200 ? "..." : "") +
+                                "\n");
+
+                        // 将工具调用结果添加到历史
+                        conversationHistory.add(Message.tool(toolCall.id(), toolResult));
+                    }
+                } else {
+                    // 不调用工具, 结束迭代
+                    conversationHistory.add(Message.assistant(response.content()));
+
+                    System.out.printf("Token 使用情况: 输入=%d, 输出=%d\n", response.inputTokens(), response.outputTokens());
+                    return response.content();
+                }
+            } catch (Exception e) {
+                return "模型调用失败: " + e.getMessage();
+            }
+        }
+
+        return "超过最大迭代次数";
+    }
+
+    // 清空历史 (保留系统提示词)
+    public void clearHistory() {
+        conversationHistory.clear();
+        conversationHistory.add(Message.system(SYSTEM_PROMPT));
+    }
+}
