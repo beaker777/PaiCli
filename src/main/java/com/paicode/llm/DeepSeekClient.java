@@ -74,15 +74,17 @@ public class DeepSeekClient {
         }
 
         // 添加工具
-        ArrayNode toolsArray = requestBody.putArray("tools");
-        for (Tool tool : tools) {
-            ObjectNode toolNode = toolsArray.addObject();
-            toolNode.put("type", "function");
+        if (tools != null && !tools.isEmpty()) {
+            ArrayNode toolsArray = requestBody.putArray("tools");
+            for (Tool tool : tools) {
+                ObjectNode toolNode = toolsArray.addObject();
+                toolNode.put("type", "function");
 
-            ObjectNode functionNode = toolNode.putObject("function");
-            functionNode.put("name", tool.name());
-            functionNode.put("description", tool.description());
-            functionNode.set("parameters", tool.parameters());
+                ObjectNode functionNode = toolNode.putObject("function");
+                functionNode.put("name", tool.name());
+                functionNode.put("description", tool.description());
+                functionNode.set("parameters", tool.parameters());
+            }
         }
 
         // 构建请求
