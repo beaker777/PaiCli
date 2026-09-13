@@ -4,14 +4,21 @@ import com.paicode.llm.DTO.ChatResponse;
 import com.paicode.llm.DTO.Message;
 import com.paicode.llm.DTO.ToolCall;
 import com.paicode.llm.DeepSeekClient;
+import com.paicode.plan.DTO.PlanReviewDecision;
+import com.paicode.plan.DTO.TaskExecutionResult;
 import com.paicode.plan.ExecutionPlan;
+import com.paicode.plan.PlanReviewHandler;
 import com.paicode.plan.Planner;
 import com.paicode.plan.Task;
+import com.paicode.plan.constant.PlanReviewAction;
 import com.paicode.tool.ToolRegistry;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 /**
@@ -24,6 +31,7 @@ public class PlanAndExecuteAgent {
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
     private final Planner planner;
+    private final PlanReviewHandler reviewHandler;
 
     // 执行提示词
     private static final String EXECUTION_PROMPT = """
@@ -44,19 +52,19 @@ public class PlanAndExecuteAgent {
             """;
 
     public PlanAndExecuteAgent(String apiKey) {
-        llmClient = new DeepSeekClient(apiKey);
-        toolRegistry = new ToolRegistry();
-        planner = new Planner(llmClient);
+        this(apiKey, ((goal, plan) -> PlanReviewDecision.execute()));
+    }
+
+    public PlanAndExecuteAgent(String apiKey, PlanReviewHandler reviewHandler) {
+        this.llmClient = new DeepSeekClient(apiKey);
+        this.toolRegistry = new ToolRegistry();
+        this.planner = new Planner(llmClient);
+        this.reviewHandler = reviewHandler == null ? ((goal, plan) -> PlanReviewDecision.execute()) : reviewHandler;
     }
 
     public String run(String userInput) throws IOException {
         try {
-            // 判断是否需要 plan
-            if (shouldPlan(userInput)) {
-                return runWithPlan(userInput);
-            } else {
-                return runSimple(userInput);
-            }
+            return runWithPlan(userInput);
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }
@@ -79,65 +87,155 @@ public class PlanAndExecuteAgent {
         // 创建计划
         ExecutionPlan plan = planner.createPlan(goal);
 
-        return executePlan(goal, plan);
+        return reviewAndExecutePlan(plan);
     }
 
-    private String executePlan(String goal, ExecutionPlan plan) throws IOException {
+    private String reviewAndExecutePlan(ExecutionPlan plan) throws IOException {
+        while (true) {
+            PlanReviewDecision decision = reviewHandler.review(plan.getGoal(), plan);
+            if (decision == null || decision.action() == PlanReviewAction.EXECUTE) {
+                return executePlan(plan);
+            }
+
+            if (decision.action() == PlanReviewAction.CANCEL) {
+                return "已取消本次计划";
+            }
+
+            String feedback = decision.feedback() == null ? "" : decision.feedback().trim();
+            if (feedback.isBlank()) {
+                return executePlan(plan);
+            }
+
+            System.out.println("已收集到补充要求, 正在重新规划...\n");
+            plan = planner.createPlan(plan.getGoal() + "\n补充要求: " + feedback);
+        }
+    }
+
+    private String executePlan(ExecutionPlan plan) throws IOException {
         System.out.println(plan.visualize());
         System.out.println("开始执行计划...\n");
 
-        // 执行计划
         plan.markStarted();
         StringBuilder finalResult = new StringBuilder();
 
-        List<String> executionOrder = plan.getExecutionOrder();
-        for (String taskId : executionOrder) {
-            Task task = plan.getTask(taskId);
-
-            // 检查依赖
-            if (!task.isExecutable(
-                    plan.getAllTasks().stream().collect(Collectors.toMap(Task::getId, t -> t)))) {
-                System.out.println("依赖未完成, 跳过任务: " + taskId);
-                task.markSkipped();
-                continue;
+        while (true) {
+            // 按顺序获取可执行计划
+            List<Task> executableTasks = getExecutableTasksInOrder(plan);
+            if (executableTasks.isEmpty()) {
+                break;
             }
 
-            // 执行任务
-            System.out.println("执行任务");
-            task.markStarted();
+            List<TaskExecutionResult> results = executeTasksBatch(plan, executableTasks);
+            for (TaskExecutionResult result : results) {
+                Task task = result.task();
 
-            try {
-                String result = executeTask(goal, plan, task);
-                task.markCompleted(result);
+                // 任务成功执行, 继续处理
+                if (!result.isFailed()) {
+                    task.markCompleted(result.result());
 
-                System.out.println("任务完成: " + result.substring(0, Math.min(100, result.length())) + "\n");
-            } catch (Exception e) {
-                task.markFailed(e.getMessage());
-                System.out.println("任务执行失败: " + e.getMessage() + "\n");
+                    System.out.println("任务完成 [" + task.getId() + "]: "
+                    + result.result().substring(0, Math.min(100, result.result().length())) + "\n");
 
-                // 尝试重新构建
+                    continue;
+                }
+
+                // 任务失败, 处理异常
+                Exception error = result.error();
+                task.markFailed(error.getMessage());
+                System.out.println("任务失败 [" + task.getId() + "]: " + error.getMessage() + "\n");
+
+                // 任务进度 < 0.5 则重新规划并执行
                 if (plan.getProgress() < 0.5) {
                     System.out.println("尝试重新规划...\n");
-
-                    ExecutionPlan replan = planner.replan(plan, e.getMessage());
-                    return executePlan(goal, replan);
-                } else {
-                    finalResult.append("任务 ").append(taskId).append(" 失败: ").append(e.getMessage());
+                    ExecutionPlan replan = planner.replan(plan, error.getMessage());
+                    return executePlan(replan);
                 }
             }
         }
 
+        if (!plan.isAllCompleted() && !plan.hasFailed()) {
+            plan.markFailed();
+            return "计划未能正常执行, 存在未满足依赖的任务";
+        }
         if (finalResult.isEmpty()) {
             finalResult.append(buildFinalResult(plan));
         }
 
-        // 完成任务
+        // 完成计划
         if (plan.hasFailed()) {
             plan.markFailed();
-            return "计划未完成, 有任务失败\n" + finalResult;
+            return "计划未能正常执行, 存在失败的任务";
         } else {
             plan.markCompleted();
-            return "计划执行完成\n" + finalResult;
+            return "计划执行完成! \n" + finalResult;
+        }
+    }
+
+    private List<Task> getExecutableTasksInOrder(ExecutionPlan plan) {
+        Set<String> executableIds = plan.getExecutableTasks().stream()
+                .map(Task::getId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        return plan.getExecutionOrder().stream()
+                .filter(executableIds::contains)
+                .map(plan::getTask)
+                .toList();
+    }
+
+    private List<TaskExecutionResult> executeTasksBatch(ExecutionPlan plan, List<Task> executableTasks) {
+        // 一个任务直接执行
+        if (executableTasks.size() == 1) {
+            Task task = executableTasks.get(0);
+            System.out.println("> 执行任务 [" + task.getId() + "]: " + task.getDescription());
+            task.markStarted();
+
+            try {
+                return List.of(TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task)));
+            } catch (Exception e) {
+                return List.of(TaskExecutionResult.failure(task, e));
+            }
+        }
+
+        // 多个任务并行执行
+        String parallelTaskIds = executableTasks.stream()
+                .map(Task::getId)
+                .collect(Collectors.joining(", "));
+        System.out.println("> 本轮并行执行: " + executableTasks.size() + " 个任务: " + parallelTaskIds);
+
+        // 创建线程池, 并行执行任务
+        ExecutorService executor = Executors.newFixedThreadPool(executableTasks.size());
+        try {
+            List<Future<TaskExecutionResult>> futures = new ArrayList<>();
+            for (Task task : executableTasks) {
+                System.out.println("> 并行任务 [" + task.getId() + "]: " + task.getDescription());
+                task.markStarted();
+
+                futures.add(executor.submit(() -> {
+                    try {
+                        return TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task));
+                    } catch (Exception e) {
+                        return TaskExecutionResult.failure(task, e);
+                    }
+                }));
+            }
+
+            // 获取任务执行结果
+            List<TaskExecutionResult> results = new ArrayList<>();
+            for (Future<TaskExecutionResult> future : futures) {
+                try {
+                    results.add(future.get());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    results.add(TaskExecutionResult.failure(executableTasks.get(results.size()), e));
+                } catch (ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    Exception error = cause instanceof Exception exception ? exception : new RuntimeException(cause);
+                    results.add(TaskExecutionResult.failure(executableTasks.get(results.size()), e));
+                }
+            }
+            return results;
+        } finally {
+            executor.shutdown();
         }
     }
 

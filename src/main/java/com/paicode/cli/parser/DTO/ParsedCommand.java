@@ -1,6 +1,6 @@
-package com.paicode.cli.DTO;
+package com.paicode.cli.parser.DTO;
 
-import com.paicode.cli.constant.CommandType;
+import com.paicode.cli.parser.constant.CommandType;
 
 /**
  * @Author beaker

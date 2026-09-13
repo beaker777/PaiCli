@@ -1,4 +1,4 @@
-package com.paicode.cli.constant;
+package com.paicode.cli.parser.constant;
 
 /**
  * @Author beaker

@@ -1,7 +1,7 @@
-package com.paicode.cli;
+package com.paicode.cli.parser;
 
-import com.paicode.cli.DTO.ParsedCommand;
-import com.paicode.cli.constant.CommandType;
+import com.paicode.cli.parser.DTO.ParsedCommand;
+import com.paicode.cli.parser.constant.CommandType;
 
 /**
  * @Author beaker
@@ -20,7 +20,10 @@ public class CliCommandParser {
             return ParsedCommand.none();
         }
 
-        if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit")) {
+        if (trimmed.equalsIgnoreCase("/exit")
+                || trimmed.equalsIgnoreCase("/quit")
+                || trimmed.equalsIgnoreCase("exit")
+                || trimmed.equalsIgnoreCase("quit")) {
             return new ParsedCommand(CommandType.EXIT, null);
         }
 
