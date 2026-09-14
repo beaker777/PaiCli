@@ -94,7 +94,7 @@ public class Planner {
         plan.setSummary(summary);
 
         // 解析任务
-        Map<String, String> idMapping = new HashMap<>(); // 处理可能重复的 taskId
+        Map<String, String> idMapping = new HashMap<>();
         int taskIndex = 1;
         for (JsonNode taskNode : tasks) {
             String originalId = taskNode.path("id").asText();
@@ -106,8 +106,7 @@ public class Planner {
             TaskType taskType = parseTaskType(typeStr);
 
             // 创建任务 (本轮不处理依赖)
-            Task task = new Task(newId, description, taskType);
-            plan.addTask(task);
+            plan.addTask(new Task(newId, description, taskType));
         }
 
         // 处理依赖
@@ -122,19 +121,11 @@ public class Planner {
                     String originalDepId = depNode.asText();
                     String newDepId = idMapping.getOrDefault(originalDepId, originalDepId);
 
-                    if (plan.getTask(newDepId) != null) {
+                    Task dep = plan.getTask(newDepId);
+                    if (dep != null) {
                         task.addDependency(newDepId);
+                        dep.addDependent(task.getId());
                     }
-                }
-            }
-        }
-
-        // 处理被依赖
-        for (Task task : plan.getAllTasks()) {
-            for (String depId : task.getDependencies()) {
-                Task dep = plan.getTask(depId);
-                if (dep != null) {
-                    dep.addDependent(task.getId());
                 }
             }
         }

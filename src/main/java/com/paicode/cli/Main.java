@@ -126,7 +126,6 @@ public class Main {
                     }
                 }
 
-
                 // 运行 Agent
                 System.out.println();
                 String response;
@@ -342,7 +341,7 @@ public class Main {
     }
 
     private static boolean isSubmitKey(int key) {
-        return key == '\n' || key == '\r' || key == 13 || key == 10;
+        return key == '\n' || key == '\r';
     }
 
     private static PlanReviewHandler createPlanReviewHandler(Terminal terminal, LineReader lineReader) {
@@ -359,7 +358,7 @@ public class Main {
                 Integer key = readSingleKeyFromTerminal(terminal);
                 if (key != null) {
                     // Enter (13 或 10)
-                    if (key == '\n' || key == '\r' || key == 13 || key == 10) {
+                    if (key == '\n' || key == '\r') {
                         System.out.println();
                         return PlanReviewDecision.execute();
                     }

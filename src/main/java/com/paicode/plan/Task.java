@@ -21,13 +21,13 @@ public class Task {
     private final String id;
     private final String description;
     private final TaskType taskType;
-    private TaskStatus taskStatus;
-    private String result;
-    private String error;
+    private volatile TaskStatus taskStatus;
+    private volatile String result;
+    private volatile String error;
     private final List<String> dependencies; // 依赖的任务 id
     private final List<String> dependents; // 依赖此任务的其他任务 id
-    private Long startTime;
-    private Long endTime;
+    private volatile Long startTime;
+    private volatile Long endTime;
 
     public Task(String id, String description, TaskType taskType) {
         this.id = id;

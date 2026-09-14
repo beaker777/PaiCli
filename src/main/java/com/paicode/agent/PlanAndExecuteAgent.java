@@ -33,6 +33,9 @@ public class PlanAndExecuteAgent {
     private final Planner planner;
     private final PlanReviewHandler reviewHandler;
 
+    // 最大迭代轮数
+    private static final int MAX_TASK_ITERATIONS = 5;
+
     // 执行提示词
     private static final String EXECUTION_PROMPT = """
             你是一个任务执行专家。请根据当前任务和上下文，选择合适的工具或生成回复。
@@ -62,25 +65,12 @@ public class PlanAndExecuteAgent {
         this.reviewHandler = reviewHandler == null ? ((goal, plan) -> PlanReviewDecision.execute()) : reviewHandler;
     }
 
-    public String run(String userInput) throws IOException {
+    public String run(String userInput) {
         try {
             return runWithPlan(userInput);
         } catch (Exception e) {
             return "执行失败: " + e.getMessage();
         }
-    }
-
-    private boolean shouldPlan(String input) {
-        // 启发式判断
-        String lower = input.toLowerCase();
-        int actionCount = 0;
-        String[] actionKeywords = {"创建", "写", "读", "执行", "编译", "运行", "修改", "删除", "然后", "接着", "再", "最后"};
-
-        for (String keyword : actionKeywords) {
-            if (lower.contains(keyword)) actionCount++;
-        }
-
-        return actionCount >= 3 || input.length() > 50;
     }
 
     private String runWithPlan(String goal) throws IOException {
@@ -239,6 +229,7 @@ public class PlanAndExecuteAgent {
         }
     }
 
+    // 执行任务, 支持 ReAct 模式
     private String executeTask(String goal, ExecutionPlan plan, Task task) throws IOException {
         // 构建提示词
         String prompt = String.format(EXECUTION_PROMPT, task.getTaskType(), task.getDescription());
@@ -247,13 +238,26 @@ public class PlanAndExecuteAgent {
                 Message.user(buildTaskContext(goal, plan, task))
         );
 
-        // 调用 LLM
-        ChatResponse response = llmClient.chat(messages, toolRegistry.getTools());
+        StringBuilder allResults = new StringBuilder();
+        int iteration = 0;
 
-        // 调用工具
-        if (response.hasToolCalls()) {
-            StringBuilder results = new StringBuilder();
+        while (iteration < MAX_TASK_ITERATIONS) {
+            iteration ++;
 
+            // 调用 LLM
+            ChatResponse response = llmClient.chat(messages, toolRegistry.getTools());
+
+            // 没有工具调用, 直接返回结果
+            if (!response.hasToolCalls()) {
+                if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
+                    return allResults.toString().trim();
+                }
+
+                return response.content();
+            }
+
+            // 调用工具, 将 toolCalls 和 toolResult 写入历史
+            messages.add(Message.assistant(response.content(), response.toolCalls()));
             for (ToolCall toolCall : response.toolCalls()) {
                 String name = toolCall.function().name();
                 String arguments = toolCall.function().arguments();
@@ -261,13 +265,12 @@ public class PlanAndExecuteAgent {
                 System.out.println("调用工具: " + name);
 
                 String result = toolRegistry.executeTool(name, arguments);
-                results.append(results).append("\n");
+                allResults.append(result).append("\n");
+                messages.add(Message.tool(toolCall.id(), result));
             }
-
-            return results.toString().trim();
-        } else {
-            return response.content();
         }
+
+        return allResults.toString().trim();
     }
 
     private String buildTaskContext(String goal, ExecutionPlan plan, Task task) {
@@ -326,33 +329,5 @@ public class PlanAndExecuteAgent {
                 .reduce((first, second) -> second)
                 .map(Task::getResult)
                 .orElse("");
-    }
-
-    public String runSimple(String userInput) throws IOException {
-        System.out.println("简单任务, 直接执行");
-
-        List<Message> messages = Arrays.asList(
-                Message.system("你是一个智能 agent, 可以调用工具完成任务"),
-                Message.user(userInput)
-        );
-
-        ChatResponse response = llmClient.chat(messages, toolRegistry.getTools());
-
-        if (response.hasToolCalls()) {
-            StringBuilder results = new StringBuilder();
-
-            for (ToolCall toolCall : response.toolCalls()) {
-                String name = toolCall.function().name();
-                String arguments = toolCall.function().arguments();
-
-                String result = toolRegistry.executeTool(name, arguments);
-
-                results.append(result).append("\n");
-            }
-
-            return results.toString().trim();
-        } else {
-            return response.content();
-        }
     }
 }

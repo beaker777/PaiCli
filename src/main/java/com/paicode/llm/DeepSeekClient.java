@@ -28,16 +28,14 @@ public class DeepSeekClient {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final OkHttpClient okHttpClient;
+    private static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .build();
 
     public DeepSeekClient(String apiKey) {
         this.apiKey = apiKey;
-
-        this.okHttpClient = new OkHttpClient.Builder()
-                .connectTimeout(60, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
-                .writeTimeout(60, TimeUnit.SECONDS)
-                .build();
     }
 
     public ChatResponse chat(List<Message> messages, List<Tool> tools) throws IOException {
@@ -99,12 +97,18 @@ public class DeepSeekClient {
                 .post(body)
                 .build();
 
-        try (Response response = okHttpClient.newCall(request).execute()) {
+        try (Response response = SHARED_HTTP_CLIENT.newCall(request).execute()) {
+            ResponseBody responseBodyObj = response.body();
             if (!response.isSuccessful()) {
-                throw new IOException("API 请求失败: " + response.code() + " - " + response.body().toString());
+                String errorBody = responseBodyObj != null ? responseBodyObj.string() : "无响应体";
+                throw new IOException("API 请求失败: " + response.code() + " - " + errorBody);
             }
 
-            String responseBody = response.body().string();
+            if (responseBodyObj == null) {
+                throw new IOException("API 返回空响应体");
+            }
+
+            String responseBody = responseBodyObj.string();
             JsonNode root = objectMapper.readTree(responseBody);
 
             // 解析响应
