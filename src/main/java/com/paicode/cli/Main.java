@@ -68,6 +68,8 @@ public class Main {
             System.out.println("   - 输入 '/plan' 进入 Plan-and-Execute 模式"); // 执行完毕后会自动返回 ReAct 模式
             System.out.println("   - 输入 '/plan 任务内容' 直接用计划模式执行任务");
             System.out.println("   - 默认模式是 ReAct");
+            System.out.println("   - 输入 '/memory' 查看记忆状态");
+            System.out.println("   - 输入 '/save 事实内容' 手动保存关键事实");
             System.out.println("   - 输入 'clear' 清空对话历史");
             System.out.println("   - 输入 'exit' 或 'quit' 退出\n");
 
@@ -108,6 +110,20 @@ public class Main {
                     case CLEAR -> {
                         reactAgent.clearHistory();
                         System.out.println("对话历史已清空\n");
+                        continue;
+                    }
+                    case MEMORY_STATUS -> {
+                        System.out.println("记忆状态: ");
+                        System.out.println(reactAgent.getSystemStatus());
+                        System.out.println();
+                        continue;
+                    }
+                    case MEMORY_SAVE -> {
+                        String fact = command.payload();
+                        if (fact != null && !fact.isBlank()) {
+                            reactAgent.getMemoryManager().storeFact(fact);
+                            System.out.println("已保存到长期记忆: " + fact + "\n");
+                        }
                         continue;
                     }
                     case SWITCH_PLAN -> {

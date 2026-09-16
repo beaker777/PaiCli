@@ -11,9 +11,11 @@ public enum CommandType {
 
     EXIT,
 
-    SELECT_MODE,
-
     CLEAR,
 
-    SWITCH_PLAN
+    SWITCH_PLAN,
+
+    MEMORY_STATUS,
+
+    MEMORY_SAVE
 }

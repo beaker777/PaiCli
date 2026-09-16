@@ -4,7 +4,9 @@ import com.paicode.llm.DTO.ChatResponse;
 import com.paicode.llm.DTO.Message;
 import com.paicode.llm.DTO.ToolCall;
 import com.paicode.llm.DeepSeekClient;
+import com.paicode.memory.MemoryManager;
 import com.paicode.tool.ToolRegistry;
+import lombok.Getter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,6 +21,8 @@ public class Agent {
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
+    @Getter
+    private final MemoryManager memoryManager;
 
     // 最大迭代次数
     private static final int MAX_ITERATIONS = 10;
@@ -37,6 +41,8 @@ public class Agent {
             当需要操作文件、执行命令或创建项目时，请使用工具调用。
             使用工具后，根据工具返回的结果继续思考下一步行动。
 
+            如果提供了相关记忆, 请参考记忆来辅助决策.
+
             请用中文回复用户。
             """;
 
@@ -44,6 +50,7 @@ public class Agent {
         llmClient = new DeepSeekClient(apikey);
         toolRegistry = new ToolRegistry();
         conversationHistory = new ArrayList<>();
+        memoryManager = new MemoryManager(llmClient);
 
         // 添加系统提示词
         conversationHistory.add(Message.system(SYSTEM_PROMPT));
@@ -51,6 +58,13 @@ public class Agent {
 
     // 运行
     public String run(String userInput) {
+        // 存入短期记忆
+        memoryManager.addUserMessage(userInput);
+
+        // 检索相关长期记忆, 注入到 system prompt
+        String memoryContext = memoryManager.buildContextForQuery(userInput, 500);
+        updateSystemPromptWithMemory(memoryContext);
+
         // 将用户输入添加到历史
         conversationHistory.add(Message.user(userInput));
 
@@ -82,12 +96,21 @@ public class Agent {
                                 (toolResult.length() > 200 ? "..." : "") +
                                 "\n");
 
+                        // 将工具调用结果存入记忆
+                        memoryManager.addToolResult(name, toolResult);
+
                         // 将工具调用结果添加到历史
                         conversationHistory.add(Message.tool(toolCall.id(), toolResult));
                     }
                 } else {
                     // 不调用工具, 结束迭代
                     conversationHistory.add(Message.assistant(response.content()));
+
+                    // 存入记忆
+                    memoryManager.addAssistantMessage(response.content());
+
+                    // 记录 token 使用情况
+                    memoryManager.recordTokenUsage(response.inputTokens(), response.outputTokens());
 
                     System.out.printf("Token 使用情况: 输入=%d, 输出=%d\n", response.inputTokens(), response.outputTokens());
                     return response.content();
@@ -102,7 +125,31 @@ public class Agent {
 
     // 清空历史 (保留系统提示词)
     public void clearHistory() {
+        // 保存当前对话的关键事实
+        memoryManager.extractAndSaveFacts();
+
+        Message systemPrompt = conversationHistory.get(0);
         conversationHistory.clear();
-        conversationHistory.add(Message.system(SYSTEM_PROMPT));
+        conversationHistory.add(systemPrompt);
+
+        // 清空短期记忆
+        memoryManager.getShortTermMemory().clear();
+    }
+
+    public String getSystemStatus() {
+        return memoryManager.getSystemStatus();
+    }
+
+    /**
+     * 将记忆注入到 system prompt 替换 conversationHistory[0]
+     */
+    private void updateSystemPromptWithMemory(String memoryContext) {
+        if (memoryContext == null || memoryContext.isBlank()) {
+            // 没有记忆的时候重置回默认的 system prompt, 避免上下文污染
+            conversationHistory.set(0, Message.system(SYSTEM_PROMPT));
+        } else {
+            String enrichedPrompt = SYSTEM_PROMPT + "\n" + memoryContext;
+            conversationHistory.set(0, Message.system(enrichedPrompt));
+        }
     }
 }

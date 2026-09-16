@@ -4,6 +4,7 @@ import com.paicode.llm.DTO.ChatResponse;
 import com.paicode.llm.DTO.Message;
 import com.paicode.llm.DTO.ToolCall;
 import com.paicode.llm.DeepSeekClient;
+import com.paicode.memory.MemoryManager;
 import com.paicode.plan.DTO.PlanReviewDecision;
 import com.paicode.plan.DTO.TaskExecutionResult;
 import com.paicode.plan.ExecutionPlan;
@@ -32,6 +33,7 @@ public class PlanAndExecuteAgent {
     private final ToolRegistry toolRegistry;
     private final Planner planner;
     private final PlanReviewHandler reviewHandler;
+    private final MemoryManager memoryManager;
 
     // 最大迭代轮数
     private static final int MAX_TASK_ITERATIONS = 5;
@@ -46,8 +48,9 @@ public class PlanAndExecuteAgent {
             可用工具：
             1. read_file - 读取文件内容，参数：{"path": "文件路径"}
             2. write_file - 写入文件内容，参数：{"path": "文件路径", "content": "内容"}
-            3. execute_command - 执行命令，参数：{"command": "命令"}
-            4. create_project - 创建项目，参数：{"name": "名称", "type": "java|python|node"}
+            3. list_dir - 列出目录内容, 参数: {"path": "文件路径"}
+            4. execute_command - 执行命令，参数：{"command": "命令"}
+            5. create_project - 创建项目，参数：{"name": "名称", "type": "java|python|node"}
 
             如果是ANALYSIS或VERIFICATION类型任务，请直接输出分析结果，不需要调用工具。
 
@@ -59,17 +62,33 @@ public class PlanAndExecuteAgent {
     }
 
     public PlanAndExecuteAgent(String apiKey, PlanReviewHandler reviewHandler) {
-        this.llmClient = new DeepSeekClient(apiKey);
-        this.toolRegistry = new ToolRegistry();
-        this.planner = new Planner(llmClient);
-        this.reviewHandler = reviewHandler == null ? ((goal, plan) -> PlanReviewDecision.execute()) : reviewHandler;
+        this(new DeepSeekClient(apiKey), new ToolRegistry(), null, reviewHandler, null);
+    }
+
+    public PlanAndExecuteAgent(DeepSeekClient llmClient, ToolRegistry toolRegistry, Planner planner,
+                               PlanReviewHandler reviewHandler, MemoryManager memoryManager) {
+        this.llmClient = llmClient;
+        this.toolRegistry = toolRegistry != null ? toolRegistry : new ToolRegistry();
+        this.planner = planner != null ? planner : new Planner(llmClient);
+        this.reviewHandler = reviewHandler != null ? reviewHandler : ((goal, plan) -> PlanReviewDecision.execute());
+        this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
     }
 
     public String run(String userInput) {
+        memoryManager.addUserMessage(userInput);
         try {
-            return runWithPlan(userInput);
+            String result = runWithPlan(userInput);
+            if (!result.isBlank()) {
+                memoryManager.addAssistantMessage("计划结果: " + result);
+            }
+
+            // 提取事实
+            memoryManager.extractAndSaveFacts();
+            return result;
         } catch (Exception e) {
-            return "执行失败: " + e.getMessage();
+            String errorMessage = "计划执行失败: " + e.getMessage();
+            memoryManager.addAssistantMessage(errorMessage);
+            return errorMessage;
         }
     }
 
@@ -233,9 +252,17 @@ public class PlanAndExecuteAgent {
     private String executeTask(String goal, ExecutionPlan plan, Task task) throws IOException {
         // 构建提示词
         String prompt = String.format(EXECUTION_PROMPT, task.getTaskType(), task.getDescription());
+
+        // 注入记忆上下文
+        String memoryContext = memoryManager.buildContextForQuery(task.getDescription(), 300);
+        String taskInput = buildTaskContext(goal, plan, task);
+        if (!memoryContext.isBlank()) {
+            taskInput = taskInput + "\n\n" + memoryContext;
+        }
+
         List<Message> messages = Arrays.asList(
                 Message.system(prompt),
-                Message.user(buildTaskContext(goal, plan, task))
+                Message.user(taskInput)
         );
 
         StringBuilder allResults = new StringBuilder();
@@ -249,10 +276,21 @@ public class PlanAndExecuteAgent {
 
             // 没有工具调用, 直接返回结果
             if (!response.hasToolCalls()) {
+                memoryManager.recordTokenUsage(response.inputTokens(), response.outputTokens());
+
+                // 如果最后一轮工具调用结果为空就使用之前的记录
                 if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
-                    return allResults.toString().trim();
+                    String toolResult = allResults.toString().trim();
+                    if (!toolResult.isBlank()) {
+                        memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "]" + toolResult);
+                    }
+                    return toolResult;
                 }
 
+                // 将最后一轮调用工具的结果存入记忆
+                if (response.content() != null && !response.content().isBlank()) {
+                    memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "]" + response.content());
+                }
                 return response.content();
             }
 
@@ -265,12 +303,18 @@ public class PlanAndExecuteAgent {
                 System.out.println("调用工具: " + name);
 
                 String result = toolRegistry.executeTool(name, arguments);
+                memoryManager.addToolResult(name, result);
                 allResults.append(result).append("\n");
                 messages.add(Message.tool(toolCall.id(), result));
             }
         }
 
-        return allResults.toString().trim();
+        // 超过最大迭代轮数
+        String fallbackResult = allResults.toString().trim();
+        if (!fallbackResult.isBlank()) {
+            memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "]" + fallbackResult);
+        }
+        return fallbackResult;
     }
 
     private String buildTaskContext(String goal, ExecutionPlan plan, Task task) {
