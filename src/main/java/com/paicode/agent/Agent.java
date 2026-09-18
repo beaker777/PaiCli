@@ -71,8 +71,7 @@ public class Agent {
 
         // 将用户输入添加到历史
         conversationHistory.add(Message.user(userInput));
-
-        System.out.println("thinking...\n");
+        StringBuilder reasoningTranscript = new StringBuilder();
 
         int iteration = 0;
         while (iteration < MAX_ITERATIONS) {
@@ -82,23 +81,19 @@ public class Agent {
                 // 调用模型
                 ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools());
 
+                // 调用工具
                 if (response.hasToolCalls()) {
-                    // 调用工具
-                    conversationHistory.add(Message.assistant(response.content(), response.toolCalls()));
+                    appendReasoning(reasoningTranscript, response.reasoningContent());
+
+                    // 添加信息
+                    conversationHistory.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
 
                     for (ToolCall toolCall : response.toolCalls()) {
                         String name = toolCall.function().name();
-                        String arguments = toolCall.function().arguments();
+                        String toolArgs = toolCall.function().arguments();
 
-                        System.out.println("执行工具: " + name);
-                        System.out.println("工具参数: " + arguments);
-
-                        String toolResult = toolRegistry.executeTool(name, arguments);
-
-                        System.out.println("调用结果: " +
-                                toolResult.substring(0, Math.min(200, toolResult.length())) +
-                                (toolResult.length() > 200 ? "..." : "") +
-                                "\n");
+                        // 执行工具
+                        String toolResult = toolRegistry.executeTool(name, toolArgs);
 
                         // 将工具调用结果存入记忆
                         memoryManager.addToolResult(name, toolResult);
@@ -107,8 +102,10 @@ public class Agent {
                         conversationHistory.add(Message.tool(toolCall.id(), toolResult));
                     }
                 } else {
+                    appendReasoning(reasoningTranscript, response.reasoningContent());
+
                     // 不调用工具, 结束迭代
-                    conversationHistory.add(Message.assistant(response.content()));
+                    conversationHistory.add(Message.assistant(response.reasoningContent(), response.content()));
 
                     // 存入记忆
                     memoryManager.addAssistantMessage(response.content());
@@ -116,8 +113,7 @@ public class Agent {
                     // 记录 token 使用情况
                     memoryManager.recordTokenUsage(response.inputTokens(), response.outputTokens());
 
-                    System.out.printf("Token 使用情况: 输入=%d, 输出=%d\n", response.inputTokens(), response.outputTokens());
-                    return response.content();
+                    return formatUserFacingResponse(reasoningTranscript.toString(), response.content());
                 }
             } catch (Exception e) {
                 return "模型调用失败: " + e.getMessage();
@@ -155,5 +151,29 @@ public class Agent {
             String enrichedPrompt = SYSTEM_PROMPT + "\n" + memoryContext;
             conversationHistory.set(0, Message.system(enrichedPrompt));
         }
+    }
+
+    private void appendReasoning(StringBuilder reasoningTranscript, String reasoningContent) {
+        if (reasoningContent == null || reasoningContent.isBlank()) {
+            return;
+        }
+        if (!reasoningTranscript.isEmpty()) {
+            reasoningTranscript.append("\n\n");
+        }
+
+        reasoningTranscript.append(reasoningContent);
+    }
+
+    private String formatUserFacingResponse(String reasoningContent, String answer) {
+        String normalizedReasoning = reasoningContent == null ? "" : reasoningContent.trim();
+        String normalizedAnswer = answer == null ? "" : answer.trim();
+
+        if (normalizedReasoning.isEmpty()) {
+            return normalizedAnswer;
+        }
+        if (normalizedAnswer.isEmpty()) {
+            return "思考过程:\n" + normalizedReasoning;
+        }
+        return "思考过程:\n" + normalizedReasoning + "\n\n最终结果:\n" + normalizedAnswer;
     }
 }

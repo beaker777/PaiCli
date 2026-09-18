@@ -297,12 +297,11 @@ public class PlanAndExecuteAgent {
             }
 
             // 调用工具, 将 toolCalls 和 toolResult 写入历史
-            messages.add(Message.assistant(response.content(), response.toolCalls()));
+            messages.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
+
             for (ToolCall toolCall : response.toolCalls()) {
                 String name = toolCall.function().name();
                 String arguments = toolCall.function().arguments();
-
-                System.out.println("调用工具: " + name);
 
                 String result = toolRegistry.executeTool(name, arguments);
                 memoryManager.addToolResult(name, result);

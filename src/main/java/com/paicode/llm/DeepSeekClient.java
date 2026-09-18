@@ -50,6 +50,9 @@ public class DeepSeekClient {
             ObjectNode messageNode = messagesArray.addObject();
             messageNode.put("role", msg.role());
             messageNode.put("content", msg.content());
+            if (msg.reasoningContent() != null && !msg.reasoningContent().isBlank()) {
+                messageNode.put("reasoning_content", msg.reasoningContent());
+            }
 
             // 工具调用
             if (msg.toolCalls() != null && !msg.toolCalls().isEmpty()) {
@@ -117,6 +120,7 @@ public class DeepSeekClient {
 
             String role = message.path("role").asText();
             String content = message.path("content").asText();
+            String reasoningContent = message.path("reasoning_content").asText();
 
             // 解析工具调用
             List<ToolCall> toolCalls = null;
@@ -140,7 +144,7 @@ public class DeepSeekClient {
             int inputTokens = usage.path("prompt_tokens").asInt();
             int outputTokens = usage.path("completion_tokens").asInt();
 
-            return new ChatResponse(role, content, toolCalls, inputTokens, outputTokens);
+            return new ChatResponse(role, reasoningContent, content, toolCalls, inputTokens, outputTokens);
         }
     }
 }

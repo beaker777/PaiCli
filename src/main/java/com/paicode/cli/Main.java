@@ -118,7 +118,9 @@ public class Main {
                     }
                     case MEMORY_SAVE -> {
                         String fact = command.payload();
-                        if (fact != null && !fact.isBlank()) {
+                        if (fact == null || fact.isBlank()) {
+                            System.out.println("请提供需要保存的内容, 例如: /save 这个项目使用 Java17");
+                        } else {
                             reactAgent.getMemoryManager().storeFact(fact);
                             System.out.println("已保存到长期记忆: " + fact + "\n");
                         }

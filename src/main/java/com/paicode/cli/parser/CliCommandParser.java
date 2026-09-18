@@ -43,6 +43,10 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.MEMORY_STATUS, null);
         }
 
+        if (trimmed.equalsIgnoreCase("/save")) {
+            return new ParsedCommand(CommandType.MEMORY_SAVE, null);
+        }
+
         if (trimmed.regionMatches(true, 0, "/save", 0, 6)) {
             return new ParsedCommand(CommandType.MEMORY_SAVE, trimmed.substring(6).trim());
         }
@@ -51,8 +55,16 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.INDEX_CODE, trimmed.substring(7).trim());
         }
 
+        if (trimmed.equalsIgnoreCase("/search")) {
+            return new ParsedCommand(CommandType.SEARCH_CODE, null);
+        }
+
         if (trimmed.regionMatches(true,0, "/search", 0, 8)) {
             return new ParsedCommand(CommandType.SEARCH_CODE, trimmed.substring(8).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/graph")) {
+            return new ParsedCommand(CommandType.GRAPH_QUERY, null);
         }
 
         if (trimmed.regionMatches(true, 0, "/graph", 0, 7)) {
