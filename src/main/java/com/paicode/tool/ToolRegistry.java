@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.DTO.Tool;
 import com.paicode.tool.service.CodeTools;
 import com.paicode.tool.service.FileTools;
+import com.paicode.tool.service.RagTools;
 import com.paicode.tool.service.ShellTools;
 
 import java.util.HashMap;
@@ -21,12 +22,14 @@ public class ToolRegistry {
 
     private static final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
+    private String projectPath = System.getProperty("user.dir");
 
     // 注册工具
     public ToolRegistry() {
         register(FileTools.create());
         register(ShellTools.create());
         register(CodeTools.create());
+        register(RagTools.create(projectPath));
     }
 
     private void register(List<ToolDefinition> toolDefinitions) {
@@ -63,5 +66,9 @@ public class ToolRegistry {
         } catch (Exception e) {
             return "执行工具失败: " + e.getMessage();
         }
+    }
+
+    public void setProjectPath(String projectPath) {
+        this.projectPath = projectPath;
     }
 }

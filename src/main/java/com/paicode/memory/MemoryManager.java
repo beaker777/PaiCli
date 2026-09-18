@@ -26,9 +26,11 @@ public class MemoryManager {
     private final MemoryRetriever retriever;
     private final TokenBudget tokenBudget;
 
+    // 工具调用结果在记忆中保存的最大长度
+    private static final int MAX_TOOL_RESULT_CHARS = 500;
 
     public MemoryManager(DeepSeekClient llmClient) {
-        this(llmClient, 200000, 8192);
+        this(llmClient, 200000, 32768);
     }
 
     public MemoryManager(DeepSeekClient llmClient, int contextWindow, int shortTermBudget) {
@@ -76,12 +78,18 @@ public class MemoryManager {
     }
 
     /**
-     * 添加工具调用结果到短期记忆
+     * 添加工具调用结果到短期记忆, 截断过长结果, 避免快速撑爆上下文
      */
     public void addToolResult(String toolName, String result) {
+        // 将 toolCall 进行截断
+        String truncated = result.length() > MAX_TOOL_RESULT_CHARS
+                ? result.substring(0, MAX_TOOL_RESULT_CHARS) + "...(已截断)"
+                : result;
+
+        String content = "[" + toolName + "] " + truncated;
         MemoryEntry entry = new MemoryEntry(
                 "tool-" + UUID.randomUUID().toString().substring(0, 8),
-                "[" + toolName + "] " + result,
+                content,
                 MemoryType.TOOL_RESULT,
                 null,
                 MemoryEntry.estimateTokens(result)

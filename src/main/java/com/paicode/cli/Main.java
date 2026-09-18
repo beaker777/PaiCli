@@ -4,7 +4,6 @@ import com.paicode.agent.Agent;
 import com.paicode.agent.PlanAndExecuteAgent;
 import com.paicode.cli.DTO.PrefillResult;
 import com.paicode.cli.DTO.PromptInput;
-import com.paicode.cli.constant.AgentMode;
 import com.paicode.cli.parser.CliCommandParser;
 import com.paicode.cli.parser.DTO.Decision;
 import com.paicode.cli.parser.DTO.ParsedCommand;
@@ -13,6 +12,13 @@ import com.paicode.cli.parser.constant.CommandType;
 import com.paicode.plan.DTO.PlanReviewDecision;
 import com.paicode.plan.ExecutionPlan;
 import com.paicode.plan.PlanReviewHandler;
+import com.paicode.rag.CodeIndex;
+import com.paicode.rag.CodeRetriever;
+import com.paicode.rag.DTO.CodeRelation;
+import com.paicode.rag.DTO.IndexResult;
+import com.paicode.rag.DTO.IndexStats;
+import com.paicode.rag.DTO.SearchResult;
+import com.paicode.rag.utils.SearchResultFormatter;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
@@ -22,22 +28,22 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
-import java.util.Scanner;
+import java.util.List;
 
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
- * @Description PaiCode v2.0 支持 ReAct 和 Plan
+ * @Description PaiCode v4.0 支持 RAG 检索代码库
  */
 public class Main {
 
-    private static final String VERSION = "2.0.0";
+    private static final String VERSION = "4.0.0";
     private static final String ENV_FILE = ".env";
     private static final String BRACKETED_PASTE_BEGIN = "[200~";
     private static final String BRACKETED_PASTE_END = "\u001b[201~";
     private static final int CTRL_O = 15;
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws Exception {
         printBanner();
 
         // 加载 API Key
@@ -62,16 +68,8 @@ public class Main {
             System.out.println("使用 ReAct 模式\n");
             boolean nextTaskUsePlanMode = false;
 
-            System.out.println("💡 提示:");
-            System.out.println("   - 输入你的问题或任务");
-            System.out.println("   - 输入 'mode' 切换执行模式");
-            System.out.println("   - 输入 '/plan' 进入 Plan-and-Execute 模式"); // 执行完毕后会自动返回 ReAct 模式
-            System.out.println("   - 输入 '/plan 任务内容' 直接用计划模式执行任务");
-            System.out.println("   - 默认模式是 ReAct");
-            System.out.println("   - 输入 '/memory' 查看记忆状态");
-            System.out.println("   - 输入 '/save 事实内容' 手动保存关键事实");
-            System.out.println("   - 输入 'clear' 清空对话历史");
-            System.out.println("   - 输入 'exit' 或 'quit' 退出\n");
+            // 输出命令目录
+            printStartupHints();
 
             while (true) {
                 // 获取用户输入
@@ -137,6 +135,81 @@ public class Main {
 
                         // 携带命令, 直接使用 plan 模式
                         input = command.payload();
+                    }
+                    case INDEX_CODE -> {
+                        String indexPath = command.payload() != null ? command.payload() : ".";
+                        System.out.println("正在索引代码库: " + indexPath);
+
+                        CodeIndex indexer = new CodeIndex();
+                        IndexResult result = indexer.index(indexPath);
+                        System.out.println(result.message() + "\n");
+
+                        // 同步项目路径到 toolRegistry
+                        String absPath = new File(indexPath).getAbsolutePath();
+                        reactAgent.getToolRegistry().setProjectPath(absPath);
+                        continue;
+                    }
+                    case SEARCH_CODE -> {
+                        String query = command.payload();
+                        if (query == null || query.isBlank()) {
+                            System.out.println("请提供检索关键词, 例如: /search 用户登录实现");
+                            continue;
+                        }
+
+                        System.out.println("正在检索: " + query);
+                        try (CodeRetriever retriever = new CodeRetriever(".")) {
+                            IndexStats stats = retriever.getStats();
+                            if (stats.chunkCount() == 0) {
+                                System.out.println("代码库尚未建立索引, 请先使用 /index 命令");
+                                continue;
+                            }
+
+                            List<SearchResult> searchResults = retriever.hybridSearch(query, 5);
+                            if (searchResults.isEmpty()) {
+                                System.out.println("未找到相关内容");
+                            } else {
+                                System.out.println(SearchResultFormatter.formatForCli(query, searchResults) + "\n");
+                            }
+                        } catch (Exception e) {
+                            System.out.println("检索失败: " + e.getMessage() + "\n");
+                        }
+                        continue;
+                    }
+                    case GRAPH_QUERY -> {
+                        String className = command.payload();
+                        if (className == null || className.isBlank()) {
+                            System.out.println("请提供类名, 例如 /graph User");
+                            continue;
+                        }
+
+                        System.out.println("正在查询类关系图谱: " + className);
+                        try (CodeRetriever retriever = new CodeRetriever(".")) {
+                            IndexStats stats = retriever.getStats();
+                            if (stats.chunkCount() == 0) {
+                                System.out.println("代码库尚未建立索引, 请先使用 /index 命令");
+                                continue;
+                            }
+
+                            List<CodeRelation> relations = retriever.getRelationGraph(className);
+                            if (relations.isEmpty()) {
+                                System.out.println("未找到相关关系\n");
+                            } else {
+                                System.out.println("找到 " + relations.size() + " 条关系:\n");
+                                for (CodeRelation rel : relations) {
+                                    String arrow = rel.relationType().equals("contains") ? "├── contains -->"
+                                            : rel.relationType().equals("extends") ? "└── extends -->"
+                                              : rel.relationType().equals("implements") ? "└── implements -->"
+                                                : rel.relationType().equals("calls") ? "├── calls -->"
+                                                  : "├── " + rel.relationType() + " -->";
+                                    System.out.printf("   %s %s [%s]%n", rel.fromName(), arrow,
+                                            rel.toName() != null ? rel.toName() : "unknown");
+                                }
+                                System.out.println();
+                            }
+                        } catch (Exception e) {
+                            System.out.println("查询失败: " + e.getMessage() + "\n");
+                        }
+                        continue;
                     }
                     case NONE -> {
                     }
@@ -483,9 +556,35 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      Plan-and-Execute Agent CLI %-8s                 ║%n", "v" + VERSION);
+        System.out.printf("║      RAG-Enhanced Agent CLI %-8s                    ║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
     }
+
+     private static List<String> startupHints() {
+        return List.of(
+                "输入你的问题或任务",
+                "输入 '/plan' 后，下一条任务使用 Plan-and-Execute 模式",
+                "输入 '/plan 任务内容' 直接用计划模式执行这条任务",
+                "计划生成后可直接执行、补充要求重规划，或取消",
+                "输入 '/index [路径]' 为代码库建立向量索引",
+                "输入 '/search <查询>' 语义检索代码",
+                "输入 '/graph <类名>' 查看代码关系图谱",
+                "默认模式是 ReAct",
+                "输入 '/clear' 清空对话历史",
+                "输入 '/memory' 查看记忆状态",
+                "输入 '/save 事实内容' 手动保存关键事实",
+                "输入 '/exit' 或 '/quit' 退出"
+        );
+    }
+
+    private static void printStartupHints() {
+        System.out.println("提示:");
+        for (String hint : startupHints()) {
+            System.out.println("   - " + hint);
+        }
+        System.out.println();
+    }
+
 }

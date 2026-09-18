@@ -7,15 +7,30 @@ package com.paicode.cli.parser.constant;
  */
 public enum CommandType {
 
+    // 不进行任何操作
     NONE,
 
+    // 退出 agent
     EXIT,
 
+    // 清空记忆
     CLEAR,
 
+    // 切换到 plan 模式
     SWITCH_PLAN,
 
+    // 记忆状态
     MEMORY_STATUS,
 
-    MEMORY_SAVE
+    // 保存记忆
+    MEMORY_SAVE,
+
+    // 建立索引
+    INDEX_CODE,
+
+    // 查找代码库
+    SEARCH_CODE,
+
+    // 查找关系图谱
+    GRAPH_QUERY
 }
