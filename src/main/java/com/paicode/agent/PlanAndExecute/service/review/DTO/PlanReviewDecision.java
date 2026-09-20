@@ -1,6 +1,6 @@
-package com.paicode.plan.DTO;
+package com.paicode.agent.PlanAndExecute.service.review.DTO;
 
-import com.paicode.plan.constant.PlanReviewAction;
+import com.paicode.agent.PlanAndExecute.service.review.constant.PlanReviewAction;
 
 /**
  * @Author beaker

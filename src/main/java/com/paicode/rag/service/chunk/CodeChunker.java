@@ -1,4 +1,4 @@
-package com.paicode.rag;
+package com.paicode.rag.service.chunk;
 
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;

@@ -71,6 +71,10 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.GRAPH_QUERY, trimmed.substring(7).trim());
         }
 
+        if (trimmed.startsWith("/")) {
+            return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);
+        }
+
         return ParsedCommand.none();
     }
 }

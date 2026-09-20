@@ -1,12 +1,15 @@
-package com.paicode.agent;
+package com.paicode.agent.ReAct;
 
 import com.paicode.llm.DTO.ChatResponse;
 import com.paicode.llm.DTO.Message;
 import com.paicode.llm.DTO.ToolCall;
 import com.paicode.llm.DeepSeekClient;
+import com.paicode.llm.stream.AgentStreamListener;
 import com.paicode.memory.MemoryManager;
 import com.paicode.tool.ToolRegistry;
 import lombok.Getter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,6 +22,7 @@ import java.util.List;
 @Getter
 public class Agent {
 
+    private final static Logger log = LoggerFactory.getLogger(Agent.class);
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
@@ -62,6 +66,8 @@ public class Agent {
 
     // 运行
     public String run(String userInput) {
+        log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
+
         // 存入短期记忆
         memoryManager.addUserMessage(userInput);
 
@@ -70,6 +76,7 @@ public class Agent {
         updateSystemPromptWithMemory(memoryContext);
 
         // 将用户输入添加到历史
+        AgentStreamListener streamListener = new AgentStreamListener();
         conversationHistory.add(Message.user(userInput));
         StringBuilder reasoningTranscript = new StringBuilder();
 
@@ -79,21 +86,27 @@ public class Agent {
 
             try {
                 // 调用模型
-                ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools());
+                ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamListener);
 
-                // 调用工具
+                // 如果存在调用工具
                 if (response.hasToolCalls()) {
+                    log.info("LLM requested {} tool call(s) in iteration {}", response.toolCalls().size(), iteration);
                     appendReasoning(reasoningTranscript, response.reasoningContent());
 
                     // 添加信息
                     conversationHistory.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
 
                     for (ToolCall toolCall : response.toolCalls()) {
+                        log.info("Executing tool: {} (iteration={})", toolCall.function().name(), iteration);
+                        log.debug("Tool args [{}]: {}", toolCall.function().name(), toolCall.function().arguments());
+
                         String name = toolCall.function().name();
                         String toolArgs = toolCall.function().arguments();
 
                         // 执行工具
                         String toolResult = toolRegistry.executeTool(name, toolArgs);
+                        log.debug("Tool result preview [{}]: {}", toolCall.function().name(), preview(toolResult, 300));
+
 
                         // 将工具调用结果存入记忆
                         memoryManager.addToolResult(name, toolResult);
@@ -112,14 +125,24 @@ public class Agent {
 
                     // 记录 token 使用情况
                     memoryManager.recordTokenUsage(response.inputTokens(), response.outputTokens());
+                    log.info("ReAct run finished: inputTokens={}, outputTokens={}, reasoningChars={}, answerChars={}",
+                            response.inputTokens(),
+                            response.outputTokens(),
+                            response.reasoningContent() == null ? 0 : response.reasoningContent().length(),
+                            response.content() == null ? 0 : response.content().length());
+                    if (log.isDebugEnabled()) {
+                        log.debug("Assistant answer preview: {}", preview(response.content(), 500));
+                    }
 
                     return formatUserFacingResponse(reasoningTranscript.toString(), response.content());
                 }
             } catch (Exception e) {
+                log.error("LLM call failed in ReAct loop", e);
                 return "模型调用失败: " + e.getMessage();
             }
         }
 
+        log.warn("ReAct run reached max iterations: {}", MAX_ITERATIONS);
         return "超过最大迭代次数";
     }
 
@@ -175,5 +198,18 @@ public class Agent {
             return "思考过程:\n" + normalizedReasoning;
         }
         return "思考过程:\n" + normalizedReasoning + "\n\n最终结果:\n" + normalizedAnswer;
+    }
+
+    private String preview(String content, int maxLength) {
+        if (content == null) {
+            return "";
+        }
+
+        String normalized = content.replace("\r\n", "\n").replace('\r', '\n');
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+
+        return normalized.substring(0, maxLength) + "...";
     }
 }

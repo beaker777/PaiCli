@@ -1,4 +1,4 @@
-package com.paicode.rag;
+package com.paicode.rag.service.retrieve;
 
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.DTO.ChatResponse;
 import com.paicode.llm.DTO.Message;
 import com.paicode.llm.DeepSeekClient;
+import com.paicode.llm.stream.PlanningStreamRender;
 import com.paicode.plan.constant.TaskStatus;
 import com.paicode.plan.constant.TaskType;
 
@@ -52,11 +53,14 @@ public class Planner {
             }
 
             规则：
-            1. 每个任务必须有唯一的id（如 task_1, task_2）
+            1. 每个任务必须有唯一的id (如 task_1, task_2)
             2. dependencies列出依赖的任务id
             3. 任务应该按执行顺序排列
             4. 任务描述要具体明确
-            5. 复杂任务拆分为5-10个子任务
+            5. 简单任务 (如列出目录, 读取单个文件), 允许生成 1-3 个任务
+            6. 复杂任务再拆分为 5-10 个子任务
+            7. 不要为了保存中间结果而额外创建 FILE_WRITE / FILE_READ, 除非用户提出相关需求
+            8. 如果一个任务一步就能完成, 那么就保持最短计划
 
             只输出JSON，不要有其他内容。
             """;
@@ -68,16 +72,36 @@ public class Planner {
     public ExecutionPlan createPlan(String goal) throws IOException {
         System.out.println("正在规划任务: " + goal + "\n");
 
+        // 创建简单任务
+        if (isSimpleGoal(goal)) {
+            return createMinimalPlan(goal);
+        }
+
+        // 构建 plan 请求
         List<Message> messages = Arrays.asList(
                 Message.system(PLANNING_PROMPT),
                 Message.user("为以下内容创建计划: " + goal)
         );
 
-        ChatResponse response = deepSeekClient.chat(messages, null);
+        // 调用 LLM
+        PlanningStreamRender streamRender = new PlanningStreamRender();
+        ChatResponse response = deepSeekClient.chat(messages, null, streamRender);
+        streamRender.finish();
         String planJson = response.content();
 
         // 解析 planJson
         return parsePlan(goal, planJson);
+    }
+
+    private ExecutionPlan createMinimalPlan(String goal) {
+        ExecutionPlan plan = new ExecutionPlan(generatePlanId(), goal);
+        plan.setSummary(buildMinimalSummary(goal));
+        plan.addTask(new Task("task_1", goal.trim(), inferSimpleTaskType(goal)));
+
+        if (!plan.computeExecutionOrder()) {
+            throw new IllegalStateException("简单计划不应出现循环依赖");
+        }
+        return plan;
     }
 
     private ExecutionPlan parsePlan(String goal, String planJson) throws IOException {
@@ -171,5 +195,79 @@ public class Planner {
         context.append("\n请制定新的执行计划，避开之前的问题。");
 
         return createPlan(context.toString());
+    }
+
+    /**
+     *  判断当前目标是否为简单任务
+     */
+    private boolean isSimpleGoal(String goal) {
+        if (goal == null) {
+            return false;
+        }
+
+        String normalized = goal.trim();
+        if (normalized.isEmpty()) {
+            return false;
+        }
+
+        boolean hasMultiStepCue = normalized.contains("然后")
+                || normalized.contains("并且")
+                || normalized.contains("并")
+                || normalized.contains("再")
+                || normalized.contains("最后")
+                || normalized.contains("同时")
+                || normalized.contains("先")
+                || normalized.contains("之后")
+                || normalized.contains("接着")
+                || normalized.contains("以及");
+        if (hasMultiStepCue) {
+            return false;
+        }
+
+        if (normalized.length() > 30) {
+            return false;
+        }
+
+        return normalized.contains("列出")
+                || normalized.contains("查看")
+                || normalized.contains("读取")
+                || normalized.contains("显示")
+                || normalized.contains("执行")
+                || normalized.contains("运行")
+                || normalized.contains("搜索")
+                || normalized.contains("当前目录")
+                || normalized.contains("文件");
+    }
+
+    /**
+     * 为简单任务创建 summary
+     */
+    private String buildMinimalSummary(String goal) {
+        String normalized = goal == null ? "" : goal.trim();
+        if (normalized.isEmpty()) {
+            return "执行简单任务";
+        }
+        return "直接执行简单任务：" + normalized;
+    }
+
+    /**
+     * 推断简单任务类型
+     */
+    private TaskType inferSimpleTaskType(String goal) {
+        String normalized = goal == null ? "" : goal.trim();
+        if (normalized.contains("读取") || normalized.contains("打开") || normalized.contains("查看")
+                && normalized.contains("文件")) {
+            return TaskType.FILE_READ;
+        }
+        if (normalized.contains("写入") || normalized.contains("修改") || normalized.contains("创建文件")) {
+            return TaskType.FILE_WRITE;
+        }
+        if (normalized.contains("分析") || normalized.contains("总结") || normalized.contains("解释")) {
+            return TaskType.ANALYSIS;
+        }
+        if (normalized.contains("验证") || normalized.contains("检查")) {
+            return TaskType.VERIFICATION;
+        }
+        return TaskType.COMMAND;
     }
 }

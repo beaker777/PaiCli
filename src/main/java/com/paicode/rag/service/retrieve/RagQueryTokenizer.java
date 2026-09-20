@@ -1,6 +1,7 @@
-package com.paicode.rag.utils;
+package com.paicode.rag.service.retrieve;
 
 import com.huaban.analysis.jieba.JiebaSegmenter;
+import com.paicode.utils.JiebaSegmenterFactory;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -16,7 +17,7 @@ import java.util.regex.Pattern;
  */
 public class RagQueryTokenizer {
 
-    private static final JiebaSegmenter SEGMENTER = new JiebaSegmenter();
+    private static final JiebaSegmenter SEGMENTER = JiebaSegmenterFactory.createSilently();
     private static final Pattern ASCII_TOKEN = Pattern.compile("[A-Za-z][A-Za-z0-9_.$-]{1,}");
 
     public static Set<String> tokenize(String query) {

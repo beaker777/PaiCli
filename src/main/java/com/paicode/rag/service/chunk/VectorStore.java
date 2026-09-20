@@ -1,4 +1,4 @@
-package com.paicode.rag;
+package com.paicode.rag.service.chunk;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;

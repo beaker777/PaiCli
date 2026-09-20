@@ -1,6 +1,7 @@
 package com.paicode.memory.service.query;
 
 import com.huaban.analysis.jieba.JiebaSegmenter;
+import com.paicode.utils.JiebaSegmenterFactory;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -14,7 +15,7 @@ import java.util.Set;
  */
 public class MemoryQueryTokenizer {
 
-    private final static JiebaSegmenter SEGMENTER = new JiebaSegmenter();
+    private final static JiebaSegmenter SEGMENTER = JiebaSegmenterFactory.createSilently();
 
     /**
      * 对文本进行分词, 返回可用于检索的 token 集合

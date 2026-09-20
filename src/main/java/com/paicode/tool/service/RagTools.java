@@ -1,9 +1,9 @@
 package com.paicode.tool.service;
 
-import com.paicode.rag.CodeRetriever;
+import com.paicode.rag.service.retrieve.CodeRetriever;
 import com.paicode.rag.DTO.IndexStats;
 import com.paicode.rag.DTO.SearchResult;
-import com.paicode.rag.utils.SearchResultFormatter;
+import com.paicode.rag.service.retrieve.SearchResultFormatter;
 import com.paicode.tool.DTO.Param;
 import com.paicode.tool.ToolDefinition;
 import com.paicode.tool.ToolSchema;

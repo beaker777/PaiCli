@@ -1,6 +1,10 @@
 package com.paicode.rag;
 
 import com.paicode.rag.DTO.*;
+import com.paicode.rag.service.chunk.CodeChunker;
+import com.paicode.rag.service.chunk.VectorStore;
+import com.paicode.rag.service.embedding.EmbeddingClient;
+import com.paicode.rag.service.retrieve.CodeAnalyzer;
 
 import java.io.IOException;
 import java.nio.file.*;

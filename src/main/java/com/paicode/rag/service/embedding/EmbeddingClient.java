@@ -1,4 +1,4 @@
-package com.paicode.rag;
+package com.paicode.rag.service.embedding;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

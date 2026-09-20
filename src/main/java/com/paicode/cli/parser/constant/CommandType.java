@@ -10,6 +10,9 @@ public enum CommandType {
     // 不进行任何操作
     NONE,
 
+    // 未知命令
+    UNKNOWN_COMMAND,
+
     // 退出 agent
     EXIT,
 

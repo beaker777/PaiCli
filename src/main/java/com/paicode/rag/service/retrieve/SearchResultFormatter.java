@@ -1,4 +1,4 @@
-package com.paicode.rag.utils;
+package com.paicode.rag.service.retrieve;
 
 import com.paicode.rag.DTO.SearchResult;
 

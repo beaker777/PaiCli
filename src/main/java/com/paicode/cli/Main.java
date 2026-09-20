@@ -1,33 +1,39 @@
 package com.paicode.cli;
 
-import com.paicode.agent.Agent;
-import com.paicode.agent.PlanAndExecuteAgent;
+import com.paicode.agent.ReAct.Agent;
+import com.paicode.agent.PlanAndExecute.PlanAndExecuteAgent;
+import com.paicode.cli.DTO.KeyReadResult;
 import com.paicode.cli.DTO.PrefillResult;
 import com.paicode.cli.DTO.PromptInput;
+import com.paicode.cli.constant.EscapeSequenceType;
 import com.paicode.cli.parser.CliCommandParser;
 import com.paicode.cli.parser.DTO.Decision;
 import com.paicode.cli.parser.DTO.ParsedCommand;
 import com.paicode.cli.parser.PlanReviewInputParser;
 import com.paicode.cli.parser.constant.CommandType;
-import com.paicode.plan.DTO.PlanReviewDecision;
+import com.paicode.agent.PlanAndExecute.service.review.DTO.PlanReviewDecision;
 import com.paicode.plan.ExecutionPlan;
-import com.paicode.plan.PlanReviewHandler;
+import com.paicode.agent.PlanAndExecute.service.review.PlanReviewHandler;
 import com.paicode.rag.CodeIndex;
-import com.paicode.rag.CodeRetriever;
+import com.paicode.rag.service.retrieve.CodeRetriever;
 import com.paicode.rag.DTO.CodeRelation;
 import com.paicode.rag.DTO.IndexResult;
 import com.paicode.rag.DTO.IndexStats;
 import com.paicode.rag.DTO.SearchResult;
-import com.paicode.rag.utils.SearchResultFormatter;
+import com.paicode.rag.service.retrieve.SearchResultFormatter;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.utils.NonBlocking;
+import org.jline.utils.NonBlockingReader;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -39,12 +45,26 @@ public class Main {
 
     private static final String VERSION = "4.0.0";
     private static final String ENV_FILE = ".env";
+
+    // 日志相关配置
+    private static final String LOG_DIR_PROPERTY = "paicode.log.dir";
+    private static final String LOG_LEVEL_PROPERTY = "paicode.log.level";
+    private static final String LOG_MAX_HISTORY_PROPERTY = "paicode.log.maxHistory";
+    private static final String LOG_MAX_FILE_SIZE_PROPERTY = "paicode.log.maxFileSize";
+    private static final String LOG_TOTAL_SIZE_CAP_PROPERTY = "paicode.log.totalSizeCap";
+
+    // terminal 处理
     private static final String BRACKETED_PASTE_BEGIN = "[200~";
     private static final String BRACKETED_PASTE_END = "\u001b[201~";
     private static final int CTRL_O = 15;
+    private static final String ARROW_UP = "[A";
+    private static final String ARROW_DOWN = "[B";
+    private static final String APP_ARROW_UP = "OA";
+    private static final String APP_ARROW_DOWN = "OB";
 
     public static void main(String[] args) throws Exception {
         printBanner();
+        configureLogging();
 
         // 加载 API Key
         String apiKey = loadApiKey();
@@ -101,6 +121,11 @@ public class Main {
                 // 处理特殊命令
                 ParsedCommand command = CliCommandParser.parse(input);
                 switch (command.type()) {
+                    case UNKNOWN_COMMAND -> {
+                        System.out.println("未知命令: " + command.payload());
+                        System.out.println("可用命令: /plan, /clear, /memory, /save, /index, /search, /graph, /exit\n");
+                        continue;
+                    }
                     case EXIT -> {
                         System.out.println("\n再见!");
                         return;
@@ -130,7 +155,7 @@ public class Main {
                         // 不携带命令, 下个任务使用 plan 模式
                         if (command.payload() == null || command.payload().isEmpty()) {
                             nextTaskUsePlanMode = true;
-                            System.out.println("下一次输入将使用 Plan 模式, 输入任务前按 Esc 可取消.\n");
+                            System.out.println("下一次输入将使用 PlanAndExecute 模式, 输入任务前按 Esc 可取消.\n");
 
                             continue;
                         }
@@ -227,56 +252,12 @@ public class Main {
                 } else {
                     response = reactAgent.run(input);
                 }
-                System.out.println("Agent: " + response);
-                System.out.println();
-            }
-        }
-    }
-
-    /**
-     * 从 .env 文件加载 API Key
-     */
-    private static String loadApiKey() {
-        File envFile = new File(ENV_FILE);
-
-        // 先尝试从当前目录读取
-        if (envFile.exists()) {
-            return readApiKeyFromFile(envFile);
-        }
-
-        // 再尝试从用户主目录读取
-        envFile = new File(System.getProperty("user.home"), ENV_FILE);
-        if (envFile.exists()) {
-            return readApiKeyFromFile(envFile);
-        }
-
-        // 最后尝试从环境变量读取
-        String envKey = System.getenv("GLM_API_KEY");
-        if (envKey != null && !envKey.isEmpty()) {
-            return envKey;
-        }
-
-        return null;
-    }
-
-    private static String readApiKeyFromFile(File file) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.startsWith("DEEPSEEK_API_KEY=")) {
-                    return line.substring("DEEPSEEK_API_KEY=".length()).trim();
+                if (response != null && !response.isBlank()) {
+                    System.out.println("Agent: " + response);
+                    System.out.println();
                 }
             }
-        } catch (IOException e) {
-            System.err.println("读取 .env 文件失败: " + e.getMessage());
         }
-        return null;
-    }
-
-    private static PlanAndExecuteAgent createPlanAgent(String apiKey, Terminal terminal, LineReader lineReader) {
-        System.out.println("使用 Plan-and-Execute 模式\n");
-        return new PlanAndExecuteAgent(apiKey, createPlanReviewHandler(terminal, lineReader));
     }
 
     private static PromptInput readPromptInput(Terminal terminal, LineReader lineReader, boolean allowEscCancel)
@@ -292,7 +273,7 @@ public class Main {
         System.out.println(prompt);
         System.out.flush();
 
-        PrefillResult prefill = readPrefillInputFromTerminal(terminal);
+        PrefillResult prefill = readPrefillInputFromTerminal(terminal, lineReader);
         if (prefill == null) {
             return PromptInput.submitted(lineReader.readLine(""));
         }
@@ -310,7 +291,7 @@ public class Main {
         return PromptInput.submitted(lineReader.readLine("", null, (MaskingCallback) null, prefill.seedBuffer()));
     }
 
-    private static PrefillResult readPrefillInputFromTerminal(Terminal terminal) {
+    private static PrefillResult readPrefillInputFromTerminal(Terminal terminal, LineReader lineReader) {
         try {
             terminal.flush();
             Attributes originalAttributes = terminal.enterRawMode();
@@ -324,7 +305,7 @@ public class Main {
 
                 // 处理读取到 Esc
                 if (key == 27) {
-                    return readEscapeInput(terminal);
+                    return readEscapeInput(terminal, lineReader);
                 }
 
                 // 处理读取到回车
@@ -348,16 +329,18 @@ public class Main {
         }
     }
 
-    private static PrefillResult readEscapeInput(Terminal terminal) throws IOException, InterruptedException {
+    private static PrefillResult readEscapeInput(Terminal terminal, LineReader lineReader) throws IOException, InterruptedException {
         String sequence = readInputBurst(terminal, 30, 25, 250);
+        EscapeSequenceType escapeSequenceType = classifyEscapeSequence(sequence);
+
 
         // 只输入了 Esc 确定为退出
-        if (sequence.isEmpty()) {
+        if (escapeSequenceType == EscapeSequenceType.STANDALONE_ESC) {
             return PrefillResult.canceledInput();
         }
 
         // 如果为粘贴, 返回粘贴的文本
-        if (sequence.startsWith(BRACKETED_PASTE_BEGIN)) {
+        if (escapeSequenceType == EscapeSequenceType.BRACKET_PASTE) {
             String pastedText = sequence.substring(BRACKETED_PASTE_BEGIN.length());
             while (!pastedText.contains(BRACKETED_PASTE_END)) {
                 String burst = readInputBurst(terminal, 30, 25, 500);
@@ -370,41 +353,29 @@ public class Main {
             return PrefillResult.seed(prepareSeedBuffer(stripBracketedPasteEndMarker(pastedText)));
         }
 
+        if (escapeSequenceType == EscapeSequenceType.CONTROL_SEQUENCE) {
+            return PrefillResult.seed(seedBufferForHistoryNavigation(lineReader, sequence));
+        }
+
         // 其他情况默认退出
         return PrefillResult.canceledInput();
     }
 
     private static String readInputBurst(Terminal terminal, long firstWaitMs, long idleWaitMs, long maxWaitMs)
             throws IOException, InterruptedException {
+        NonBlockingReader reader = terminal.reader();
         StringBuilder buffer = new StringBuilder();
         long start = System.currentTimeMillis();
-        long firstDeadline = start + firstWaitMs;
-        long idleDeadline = 0;
+        long waitMs = firstWaitMs;
 
         while (System.currentTimeMillis() - start < maxWaitMs) {
-            // 在 maxWaitMs 之内读取用户输入的内容
-            if (terminal.reader().ready()) {
-                int next = terminal.reader().read();
-                if (next < 0) {
-                    break;
-                }
-                buffer.append((char) next);
-                idleDeadline = System.currentTimeMillis() + idleWaitMs;
-                continue;
-            }
-
-            long now = System.currentTimeMillis();
-            if (buffer.isEmpty()) {
-                if (now >= firstDeadline) {
-                    // 如果超过 firstWaitMs 还没有内容直接返回
-                    break;
-                }
-            } else if (now >= idleDeadline) {
-                // 如果输入最后一个字符后超过 idleWaitMs 还没有内容直接返回
+            int next = reader.read(waitMs);
+            if (next == NonBlockingReader.READ_EXPIRED || next < 0) {
                 break;
             }
 
-            Thread.sleep(5);
+            buffer.append((char) next);
+            waitMs = idleWaitMs;
         }
 
         return buffer.toString();
@@ -431,8 +402,52 @@ public class Main {
         return rawInput;
     }
 
+     private static String seedBufferForHistoryNavigation(LineReader lineReader, String sequence) {
+        if (lineReader == null || sequence == null || sequence.isEmpty()) {
+            return "";
+        }
+
+        // 如果是上箭头, 显示历史信息
+        if (isUpArrowSequence(sequence)) {
+            return latestHistoryEntry(lineReader.getHistory());
+        }
+
+        if (isDownArrowSequence(sequence)) {
+            return "";
+        }
+
+        return "";
+    }
+
+    private static boolean isUpArrowSequence(String sequence) {
+        return ARROW_UP.equals(sequence) || APP_ARROW_UP.equals(sequence);
+    }
+
+    private static boolean isDownArrowSequence(String sequence) {
+        return ARROW_DOWN.equals(sequence) || APP_ARROW_DOWN.equals(sequence);
+    }
+
+    private static String latestHistoryEntry(History history) {
+        if (history == null || history.isEmpty()) {
+            return "";
+        }
+
+        int lastIndex = history.last();
+        if (lastIndex < 0) {
+            return "";
+        }
+
+        String entry = history.get(lastIndex);
+        return entry == null ? "" : entry;
+    }
+
     private static boolean isSubmitKey(int key) {
         return key == '\n' || key == '\r';
+    }
+
+    private static PlanAndExecuteAgent createPlanAgent(String apiKey, Terminal terminal, LineReader lineReader) {
+        System.out.println("使用 PlanAndExecute-and-Execute 模式\n");
+        return new PlanAndExecuteAgent(apiKey, createPlanReviewHandler(terminal, lineReader));
     }
 
     private static PlanReviewHandler createPlanReviewHandler(Terminal terminal, LineReader lineReader) {
@@ -446,7 +461,12 @@ public class Main {
             System.out.println("   - I：输入补充要求后重新规划\n");
 
             while (true) {
-                Integer key = readSingleKeyFromTerminal(terminal);
+                KeyReadResult keyReadResult = readSingleKeyFromTerminal(terminal);
+                if (keyReadResult.ignoredControlSequence()) {
+                    continue;
+                }
+
+                Integer key = keyReadResult.key();
                 if (key != null) {
                     // Enter (13 或 10)
                     if (key == '\n' || key == '\r') {
@@ -488,7 +508,7 @@ public class Main {
                     continue;
                 }
 
-                // 如果无法读取单键，回退到行输入模式
+                // 如果无法读取单键，回退为行输入模式
                 String decisionInput = lineReader.readLine("操作/补充> ").trim();
                 if (decisionInput.equalsIgnoreCase("/view")) {
                     System.out.println();
@@ -503,41 +523,49 @@ public class Main {
         };
     }
 
-    private static Integer readSingleKeyFromTerminal(Terminal terminal) {
+    private static KeyReadResult readSingleKeyFromTerminal(Terminal terminal) {
         try {
             terminal.flush();
             Attributes originalAttributes = terminal.enterRawMode();
             try {
                 int key = terminal.reader().read();
                 if (key < 0) {
-                    return null;
+                    return KeyReadResult.unavailable();
                 }
 
-                // 如果是 ESC，需要 drain 掉后续的方向键序列字节
+                // 如果是 ESC，需要根据后续字节进行判断
                 if (key == 27) {
-                    drainEscapeSequence(terminal);
+                    String escapeSequence = readInputBurst(terminal, 80, 20, 120);
+                    EscapeSequenceType escapeSequenceType = classifyEscapeSequence(escapeSequence);
+                    if (escapeSequenceType == EscapeSequenceType.STANDALONE_ESC) {
+                        return KeyReadResult.keyPressed(27);
+                    }
+                    if (escapeSequenceType == EscapeSequenceType.CONTROL_SEQUENCE || escapeSequenceType == EscapeSequenceType.BRACKET_PASTE) {
+                        return KeyReadResult.ignoredSequence();
+                    }
                 }
 
-                return key;
+                // 其他 key 直接返回
+                return KeyReadResult.keyPressed(key);
             } finally {
                 terminal.setAttributes(originalAttributes);
             }
         } catch (Exception e) {
-            return null;
+            return KeyReadResult.unavailable();
         }
     }
 
-
-    private static void drainEscapeSequence(Terminal terminal) {
-        try {
-            // 短暂等待，让后续字节到达
-            Thread.sleep(50);
-            // 检查并丢弃所有待读字节（如方向键序列 [A, [B 等）
-            while (terminal.reader().ready()) {
-                terminal.reader().read();
-            }
-        } catch (Exception ignored) {
+    private static EscapeSequenceType classifyEscapeSequence(String sequence) {
+        if (sequence == null || sequence.isBlank()) {
+            return EscapeSequenceType.STANDALONE_ESC;
         }
+        if (sequence.startsWith(BRACKETED_PASTE_BEGIN)) {
+            return EscapeSequenceType.BRACKET_PASTE;
+        }
+        if (sequence.startsWith("[") || sequence.startsWith("O")) {
+            return EscapeSequenceType.CONTROL_SEQUENCE;
+        }
+        return EscapeSequenceType.OTHER;
     }
 
     private static PlanReviewDecision mapReviewDecision(Decision decision) {
@@ -564,10 +592,110 @@ public class Main {
         System.out.println();
     }
 
-     private static List<String> startupHints() {
+    /**
+     * 加载配置
+     */
+    private static void configureLogging() {
+        configureLogProperty(LOG_DIR_PROPERTY, "PAICODE_LOG_DIR",
+                Path.of(System.getProperty("user.home"), ".paicode", "logs").toString());
+        configureLogProperty(LOG_LEVEL_PROPERTY, "PAICODE_LOG_LEVEL", "INFO");
+        configureLogProperty(LOG_MAX_HISTORY_PROPERTY, "PAICODE_LOG_MAX_HISTORY", "7");
+        configureLogProperty(LOG_MAX_FILE_SIZE_PROPERTY, "PAICODE_LOG_MAX_FILE_SIZE", "10MB");
+        configureLogProperty(LOG_TOTAL_SIZE_CAP_PROPERTY, "PAICODE_LOG_TOTAL_SIZE_CAP", "100MB");
+
+        try {
+            Files.createDirectories(Path.of(System.getProperty(LOG_DIR_PROPERTY)));
+        } catch (IOException e) {
+            System.err.println("创建日志目录失败: " + e.getMessage());
+        }
+    }
+
+    private static void configureLogProperty(String propertyName, String envKey, String defaultValue) {
+        String configuredValue = System.getProperty(propertyName);
+        if (configuredValue == null || configuredValue.isBlank()) {
+            configuredValue = loadConfigValue(envKey, defaultValue);
+        }
+        if (configuredValue != null && !configuredValue.isBlank()) {
+            if (LOG_DIR_PROPERTY.equals(propertyName)) {
+                configuredValue = expandHome(configuredValue.trim());
+            }
+            System.setProperty(propertyName, configuredValue.trim());
+        }
+    }
+
+    private static String loadConfigValue(String key, String defaultValue) {
+        String sysValue = System.getProperty(key);
+        if (sysValue != null && !sysValue.isBlank()) {
+            return sysValue.trim();
+        }
+
+        String envValue = System.getenv(key);
+        if (envValue != null && !envValue.isBlank()) {
+            return envValue.trim();
+        }
+
+        File currentEnv = new File(ENV_FILE);
+        if (currentEnv.exists()) {
+            String value = readValueFromFile(currentEnv, key);
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+
+        File homeEnv = new File(System.getProperty("user.home"), ENV_FILE);
+        if (homeEnv.exists()) {
+            String value = readValueFromFile(homeEnv, key);
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+
+        return defaultValue;
+    }
+
+    private static String readValueFromFile(File file, String key) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                if (line.startsWith(key + "=")) {
+                    return line.substring((key + "=").length()).trim();
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("读取 .env 文件失败: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private static String expandHome(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        if (value.equals("~")) {
+            return System.getProperty("user.home");
+        }
+        if (value.startsWith("~/")) {
+            return Path.of(System.getProperty("user.home"), value.substring(2)).toString();
+        }
+        return value;
+    }
+
+    private static void printStartupHints() {
+        System.out.println("提示:");
+        for (String hint : startupHints()) {
+            System.out.println("   - " + hint);
+        }
+        System.out.println();
+    }
+
+    private static List<String> startupHints() {
         return List.of(
                 "输入你的问题或任务",
-                "输入 '/plan' 后，下一条任务使用 Plan-and-Execute 模式",
+                "输入 '/plan' 后，下一条任务使用 PlanAndExecute-and-Execute 模式",
                 "输入 '/plan 任务内容' 直接用计划模式执行这条任务",
                 "计划生成后可直接执行、补充要求重规划，或取消",
                 "输入 '/index [路径]' 为代码库建立向量索引",
@@ -581,12 +709,10 @@ public class Main {
         );
     }
 
-    private static void printStartupHints() {
-        System.out.println("提示:");
-        for (String hint : startupHints()) {
-            System.out.println("   - " + hint);
-        }
-        System.out.println();
+    /**
+     * 从 .env 文件加载 API Key
+     */
+    private static String loadApiKey() {
+       return loadConfigValue("DEEPSEEK_API_KEY", null);
     }
-
 }
