@@ -1,16 +1,21 @@
 package com.paicode.llm.stream;
 
+import com.paicode.agent.MultiAgent.constant.AgentRole;
 import com.paicode.utils.AnsiStyle;
 import com.paicode.utils.TerminalMarkdownRenderer;
-import org.jline.jansi.Ansi;
+
+import java.io.PrintStream;
 
 /**
  * @Author beaker
- * @Date 2026/9/19 21:33
- * @Description ReAct 流式输出监听器
+ * @Date 2026/9/21 17:56
+ * @Description subAgent 流式渲染器
  */
-public class AgentStreamListener implements StreamListener {
+public class SubAgentStreamRenderer implements StreamListener {
 
+    private final String agentName;
+    private final AgentRole role;
+    private final PrintStream out;
     private final StringBuilder pendingReasoning = new StringBuilder();
     private final StringBuilder lateReasoning = new StringBuilder();
     private TerminalMarkdownRenderer reasoningRenderer;
@@ -18,6 +23,12 @@ public class AgentStreamListener implements StreamListener {
     private boolean reasoningStarted;
     private boolean contentStarted;
     private boolean streamedOutput;
+
+    public SubAgentStreamRenderer(String agentName, AgentRole role, PrintStream out) {
+        this.agentName = agentName;
+        this.role = role;
+        this.out = out;
+    }
 
     @Override
     public void onReasoningDelta(String delta) {
@@ -34,9 +45,8 @@ public class AgentStreamListener implements StreamListener {
             if (pendingReasoning.toString().isBlank()) {
                 return;
             }
-
-            System.out.println(AnsiStyle.heading("思考过程"));
-            reasoningRenderer = new TerminalMarkdownRenderer(System.out);
+            out.println(AnsiStyle.heading(reasoningLabel() + "[" + agentName + "]"));
+            reasoningRenderer = new TerminalMarkdownRenderer(out);
             reasoningRenderer.append(pendingReasoning.toString());
             pendingReasoning.setLength(0);
             reasoningStarted = true;
@@ -44,8 +54,6 @@ public class AgentStreamListener implements StreamListener {
         } else {
             reasoningRenderer.append(delta);
         }
-
-        System.out.flush();
     }
 
     @Override
@@ -57,32 +65,43 @@ public class AgentStreamListener implements StreamListener {
         if (!contentStarted) {
             if (reasoningStarted && reasoningRenderer != null) {
                 reasoningRenderer.finish();
-                System.out.println();
+                out.println();
             } else if (!pendingReasoning.isEmpty() && !pendingReasoning.toString().isBlank()) {
-                System.out.println(AnsiStyle.heading("思考过程"));
-                TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(System.out);
+                // 实质 reasoning 尚未流出就被 content 打断, 先补齐思考过程再切到结果
+                out.println(AnsiStyle.heading("🧠 " + reasoningLabel() + " [" + agentName + "]"));
+                TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(out);
                 r.append(pendingReasoning.toString());
                 r.finish();
-                System.out.println();
+                out.println();
                 pendingReasoning.setLength(0);
                 reasoningStarted = true;
             }
-
-            System.out.println("最终结果");
-            contentRenderer = new TerminalMarkdownRenderer(System.out);
+            out.println(AnsiStyle.section("🤖 " + contentLabel() + " [" + agentName + "]"));
+            contentRenderer = new TerminalMarkdownRenderer(out);
             contentStarted = true;
             streamedOutput = true;
         }
-
         contentRenderer.append(delta);
-        System.out.flush();
+        out.flush();
     }
 
-    private boolean hasStreamedOutput() {
-        return streamedOutput;
+    private String reasoningLabel() {
+        return switch (role) {
+            case PLANNER -> "规划思考";
+            case WORKER -> "执行思考";
+            case REVIEWER -> "审查思考";
+        };
     }
 
-    private void finish() {
+    private String contentLabel() {
+        return switch (role) {
+            case PLANNER -> "规划结果";
+            case WORKER -> "执行结果";
+            case REVIEWER -> "审查结果";
+        };
+    }
+
+    public void finish() {
         if (reasoningRenderer != null) {
             reasoningRenderer.finish();
         }
@@ -92,16 +111,16 @@ public class AgentStreamListener implements StreamListener {
 
         String late = lateReasoning.toString().trim();
         if (!late.isEmpty()) {
-            System.out.println();
-            System.out.println("补充思考");
-            TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(System.out);
+            out.println();
+            out.println(AnsiStyle.heading("补充思考 [" + agentName + "]"));
+            TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(out);
             r.append(late);
             r.finish();
             lateReasoning.setLength(0);
             streamedOutput = true;
         }
         if (streamedOutput) {
-            System.out.println();
+            out.println("\n");
         }
     }
 }

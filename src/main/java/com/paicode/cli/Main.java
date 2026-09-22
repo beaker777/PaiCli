@@ -1,5 +1,6 @@
 package com.paicode.cli;
 
+import com.paicode.agent.MultiAgent.AgentOrchestrator;
 import com.paicode.agent.ReAct.Agent;
 import com.paicode.agent.PlanAndExecute.PlanAndExecuteAgent;
 import com.paicode.cli.DTO.KeyReadResult;
@@ -39,11 +40,12 @@ import java.util.List;
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
- * @Description PaiCode v4.0 支持 RAG 检索代码库
+ * @Description PaiCode v5.0 - Multi-Agent Collaborate CLI
+ * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent
  */
 public class Main {
 
-    private static final String VERSION = "4.0.0";
+    private static final String VERSION = "5.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -87,6 +89,7 @@ public class Main {
             Agent reactAgent = new Agent(apiKey);
             System.out.println("使用 ReAct 模式\n");
             boolean nextTaskUsePlanMode = false;
+            boolean nextTaskUseTeamMode = false;
 
             // 输出命令目录
             printStartupHints();
@@ -107,7 +110,11 @@ public class Main {
                 if (promptInput.canceled()) {
                     if (nextTaskUsePlanMode) {
                         nextTaskUsePlanMode = false;
-                        System.out.println("已取消待执行的 plan, 回到默认的 React 模式. \n");
+                        System.out.println("已取消待执行的 Plan-And-Execute, 回到默认的 React 模式. \n");
+                    }
+                    if (nextTaskUseTeamMode) {
+                        nextTaskUseTeamMode = false;
+                        System.out.println("已取消待执行的 Multi-Agent, 回到默认的 ReAct 模式.");
                     }
                     continue;
                 }
@@ -123,7 +130,7 @@ public class Main {
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         System.out.println("未知命令: " + command.payload());
-                        System.out.println("可用命令: /plan, /clear, /memory, /save, /index, /search, /graph, /exit\n");
+                        System.out.println("可用命令: /plan, /team, /clear, /memory, /save, /index, /search, /graph, /exit\n");
                         continue;
                     }
                     case EXIT -> {
@@ -161,6 +168,14 @@ public class Main {
                         }
 
                         // 携带命令, 直接使用 plan 模式
+                        input = command.payload();
+                    }
+                    case SWITCH_TEAM -> {
+                        if (command.payload() == null || command.payload().isBlank()) {
+                            nextTaskUseTeamMode = true;
+                            System.out.println("下一条任务将使用 Multi-Agent 协作模式 (规划者 + 执行者 + 检查者). 输入任务前按 ESC 可取消, 执行完成后自动回到默认 ReAct.\n");
+                        }
+
                         input = command.payload();
                     }
                     case INDEX_CODE -> {
@@ -249,6 +264,10 @@ public class Main {
                     PlanAndExecuteAgent planAgent = createPlanAgent(apiKey, terminal, lineReader);
                     response = planAgent.run(input);
                     nextTaskUsePlanMode = false;
+                } else if (nextTaskUseTeamMode || command.type() == CommandType.SWITCH_TEAM) {
+                    AgentOrchestrator orchestrator = createTeamAgent(apiKey, reactAgent);
+                    response = orchestrator.run(input);
+                    nextTaskUseTeamMode = false;
                 } else {
                     response = reactAgent.run(input);
                 }
@@ -586,7 +605,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      RAG-Enhanced Agent CLI %-8s                    ║%n", "v" + VERSION);
+        System.out.printf("║      Multi-Agent CLI %-36s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -697,6 +716,8 @@ public class Main {
                 "输入你的问题或任务",
                 "输入 '/plan' 后，下一条任务使用 PlanAndExecute-and-Execute 模式",
                 "输入 '/plan 任务内容' 直接用计划模式执行这条任务",
+                "输入 '/team' 后，下一条任务使用 Multi-Agent 协作模式",
+                "输入 '/team 任务内容' 直接用多 Agent 协作执行这条任务",
                 "计划生成后可直接执行、补充要求重规划，或取消",
                 "输入 '/index [路径]' 为代码库建立向量索引",
                 "输入 '/search <查询>' 语义检索代码",
@@ -714,5 +735,10 @@ public class Main {
      */
     private static String loadApiKey() {
        return loadConfigValue("DEEPSEEK_API_KEY", null);
+    }
+
+    private static AgentOrchestrator createTeamAgent(String apiKey, Agent reactAgent) {
+        System.out.println("使用 Multi-Agent 协作模式");
+        return new AgentOrchestrator(apiKey, reactAgent.getToolRegistry(), reactAgent.getMemoryManager());
     }
 }

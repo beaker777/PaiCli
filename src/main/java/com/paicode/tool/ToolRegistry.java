@@ -7,6 +7,8 @@ import com.paicode.tool.service.CodeTools;
 import com.paicode.tool.service.FileTools;
 import com.paicode.tool.service.RagTools;
 import com.paicode.tool.service.ShellTools;
+import lombok.Getter;
+import org.slf4j.MDC;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -18,16 +20,27 @@ import java.util.Map;
  * @Date 2026/9/8 22:07
  * @Description 工具注册表
  */
+@Getter
 public class ToolRegistry {
 
     private static final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private String projectPath = System.getProperty("user.dir");
 
-    // 注册工具
+    private final long commandTimeoutSeconds;
+    public static final int DEFAULT_COMMAND_TIMEOUT_SECONDS = 60;
+    public static final int MAX_COMMAND_OUTPUT_CHARS = 8_000;
+
     public ToolRegistry() {
+        this(DEFAULT_COMMAND_TIMEOUT_SECONDS);
+    }
+
+    // 注册工具
+    public ToolRegistry(long commandTimeoutSeconds) {
+        this.commandTimeoutSeconds = commandTimeoutSeconds;
+
         register(FileTools.create());
-        register(ShellTools.create());
+        register(ShellTools.create(projectPath, this.commandTimeoutSeconds));
         register(CodeTools.create());
         register(RagTools.create(projectPath));
     }

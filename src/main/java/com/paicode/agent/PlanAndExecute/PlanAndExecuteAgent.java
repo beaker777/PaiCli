@@ -62,6 +62,8 @@ public class PlanAndExecuteAgent {
 
             如果任务涉及到理解代码 (如分析项目结构, 查找实现位置), 请优先使用 search_code 工具.
             如果是ANALYSIS或VERIFICATION类型任务，请直接输出分析结果，不需要调用工具。
+            对于当前项目内的文件和代码, 请优先使用 read_file, list_dir, search_code.
+            execute_command 只适合在当前项目目录执行短时间的命令, (如 git status, mvn test), 不要用它扫描整个文件系统.
 
             请用中文回复。
             """;

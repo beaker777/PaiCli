@@ -35,5 +35,8 @@ public enum CommandType {
     SEARCH_CODE,
 
     // 查找关系图谱
-    GRAPH_QUERY
+    GRAPH_QUERY,
+
+    // 切换到 multi-agent 模式
+    SWITCH_TEAM
 }
