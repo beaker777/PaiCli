@@ -1,8 +1,8 @@
 package com.paicode.memory.service.compress;
 
-import com.paicode.llm.DTO.Message;
-import com.paicode.llm.DTO.ToolCall;
-import com.paicode.memory.MemoryEntry;
+import com.paicode.llm.entity.Message;
+import com.paicode.llm.entity.ToolCall;
+import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.service.memorize.ConversationMemory;
 import lombok.Getter;
 

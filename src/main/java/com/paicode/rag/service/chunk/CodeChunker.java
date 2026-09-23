@@ -5,7 +5,7 @@ import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
-import com.paicode.rag.DTO.CodeChunk;
+import com.paicode.rag.entity.CodeChunk;
 
 import java.io.IOException;
 import java.nio.file.Files;

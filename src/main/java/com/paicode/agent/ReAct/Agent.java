@@ -2,18 +2,17 @@ package com.paicode.agent.ReAct;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.paicode.llm.DTO.ChatResponse;
-import com.paicode.llm.DTO.Message;
-import com.paicode.llm.DTO.ToolCall;
-import com.paicode.llm.DeepSeekClient;
-import com.paicode.llm.stream.AgentStreamListener;
-import com.paicode.memory.MemoryManager;
-import com.paicode.tool.DTO.ToolExecutionResult;
-import com.paicode.tool.DTO.ToolInvocation;
-import com.paicode.tool.ToolRegistry;
+import com.paicode.llm.entity.ChatResponse;
+import com.paicode.llm.entity.Message;
+import com.paicode.llm.entity.ToolCall;
+import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.stream.impl.AgentStreamListener;
+import com.paicode.memory.service.manager.MemoryManager;
+import com.paicode.tool.entity.ToolExecutionResult;
+import com.paicode.tool.entity.ToolInvocation;
+import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
 import lombok.Getter;
-import org.jline.jansi.Ansi;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

@@ -1,0 +1,104 @@
+package com.paicode.cli.service;
+
+import com.paicode.cli.entity.ParsedCommand;
+import com.paicode.cli.constant.CommandType;
+
+/**
+ * @Author beaker
+ * @Date 2026/9/12 01:04
+ * @Description
+ */
+public class CliCommandParser {
+
+    public static ParsedCommand parse(String input) {
+        if (input == null) {
+            return ParsedCommand.none();
+        }
+
+        String trimmed = input.trim();
+        if (trimmed.isEmpty()) {
+            return ParsedCommand.none();
+        }
+
+        if (trimmed.equalsIgnoreCase("/exit")
+                || trimmed.equalsIgnoreCase("/quit")
+                || trimmed.equalsIgnoreCase("exit")
+                || trimmed.equalsIgnoreCase("quit")) {
+            return new ParsedCommand(CommandType.EXIT, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("clear")) {
+            return new ParsedCommand(CommandType.CLEAR, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/plan")) {
+            return new ParsedCommand(CommandType.SWITCH_PLAN, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/plan ", 0, 6)) {
+            return new ParsedCommand(CommandType.SWITCH_PLAN, trimmed.substring(6).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/team")) {
+            return new ParsedCommand(CommandType.SWITCH_TEAM, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/team ", 0, 6)) {
+            return new ParsedCommand(CommandType.SWITCH_TEAM, trimmed.substring(6).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/hitl")) {
+            return new ParsedCommand(CommandType.SWITCH_HITL, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/hitl on")) {
+            return new ParsedCommand(CommandType.SWITCH_HITL, "on");
+        }
+
+        if (trimmed.equalsIgnoreCase("/hitl off")) {
+            return new ParsedCommand(CommandType.SWITCH_HITL, "off");
+        }
+
+        if (trimmed.equalsIgnoreCase("/memory") || trimmed.equalsIgnoreCase("/mem")) {
+            return new ParsedCommand(CommandType.MEMORY_STATUS, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/save")) {
+            return new ParsedCommand(CommandType.MEMORY_SAVE, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/save ", 0, 6)) {
+            return new ParsedCommand(CommandType.MEMORY_SAVE, trimmed.substring(6).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/memory clear") || trimmed.equalsIgnoreCase("/mem clear")) {
+            return new ParsedCommand(CommandType.MEMORY_CLEAR, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/index ", 0, 7)) {
+            return new ParsedCommand(CommandType.INDEX_CODE, trimmed.substring(7).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/search")) {
+            return new ParsedCommand(CommandType.SEARCH_CODE, null);
+        }
+
+        if (trimmed.regionMatches(true,0, "/search ", 0, 8)) {
+            return new ParsedCommand(CommandType.SEARCH_CODE, trimmed.substring(8).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/graph")) {
+            return new ParsedCommand(CommandType.GRAPH_QUERY, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/graph ", 0, 7)) {
+            return new ParsedCommand(CommandType.GRAPH_QUERY, trimmed.substring(7).trim());
+        }
+
+        if (trimmed.startsWith("/")) {
+            return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);
+        }
+
+        return ParsedCommand.none();
+    }
+}

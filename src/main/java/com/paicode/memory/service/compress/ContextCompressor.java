@@ -1,9 +1,9 @@
 package com.paicode.memory.service.compress;
 
-import com.paicode.llm.DTO.ChatResponse;
-import com.paicode.llm.DTO.Message;
-import com.paicode.llm.DeepSeekClient;
-import com.paicode.memory.MemoryEntry;
+import com.paicode.llm.entity.ChatResponse;
+import com.paicode.llm.entity.Message;
+import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.constant.MemoryType;
 import com.paicode.memory.service.memorize.ConversationMemory;
 import com.paicode.memory.service.memorize.LongTermMemory;

@@ -1,6 +1,6 @@
 package com.paicode.rag.service.retrieve;
 
-import com.paicode.rag.DTO.SearchResult;
+import com.paicode.rag.entity.SearchResult;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;

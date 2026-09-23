@@ -9,7 +9,7 @@ import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
-import com.paicode.rag.DTO.CodeRelation;
+import com.paicode.rag.entity.CodeRelation;
 
 import java.io.IOException;
 import java.nio.file.Files;

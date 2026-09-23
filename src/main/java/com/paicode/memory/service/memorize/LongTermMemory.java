@@ -2,13 +2,12 @@ package com.paicode.memory.service.memorize;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.paicode.memory.MemoryEntry;
+import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.constant.MemoryType;
 import com.paicode.memory.service.query.MemoryQueryTokenizer;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;

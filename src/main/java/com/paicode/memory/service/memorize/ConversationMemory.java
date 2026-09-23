@@ -1,6 +1,6 @@
 package com.paicode.memory.service.memorize;
 
-import com.paicode.memory.MemoryEntry;
+import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.service.query.MemoryQueryTokenizer;
 
 import java.util.*;

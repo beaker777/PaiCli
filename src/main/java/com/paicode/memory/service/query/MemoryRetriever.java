@@ -1,6 +1,7 @@
 package com.paicode.memory.service.query;
 
-import com.paicode.memory.MemoryEntry;
+import com.paicode.memory.entity.MemoryEntry;
+import com.paicode.memory.entity.ScoredEntry;
 import com.paicode.memory.service.memorize.ConversationMemory;
 import com.paicode.memory.service.memorize.LongTermMemory;
 

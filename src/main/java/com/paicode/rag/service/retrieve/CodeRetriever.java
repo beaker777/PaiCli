@@ -1,8 +1,8 @@
 package com.paicode.rag.service.retrieve;
 
-import com.paicode.rag.DTO.CodeRelation;
-import com.paicode.rag.DTO.IndexStats;
-import com.paicode.rag.DTO.SearchResult;
+import com.paicode.rag.entity.CodeRelation;
+import com.paicode.rag.entity.IndexStats;
+import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.chunk.VectorStore;
 import com.paicode.rag.service.embedding.EmbeddingClient;
 

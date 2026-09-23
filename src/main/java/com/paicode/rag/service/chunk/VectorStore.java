@@ -2,10 +2,10 @@ package com.paicode.rag.service.chunk;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.paicode.rag.DTO.CodeChunkEntry;
-import com.paicode.rag.DTO.CodeRelation;
-import com.paicode.rag.DTO.IndexStats;
-import com.paicode.rag.DTO.SearchResult;
+import com.paicode.rag.entity.CodeChunkEntry;
+import com.paicode.rag.entity.CodeRelation;
+import com.paicode.rag.entity.IndexStats;
+import com.paicode.rag.entity.SearchResult;
 
 import java.io.File;
 import java.sql.*;
