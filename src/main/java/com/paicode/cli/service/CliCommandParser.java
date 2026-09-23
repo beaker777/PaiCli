@@ -31,6 +31,14 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.CLEAR, null);
         }
 
+        if (trimmed.equalsIgnoreCase("/model")) {
+            return new ParsedCommand(CommandType.SWITCH_MODEL, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/model ", 0, 7)) {
+            return new ParsedCommand(CommandType.SWITCH_MODEL, trimmed.substring(7).trim());
+        }
+
         if (trimmed.equalsIgnoreCase("/plan")) {
             return new ParsedCommand(CommandType.SWITCH_PLAN, null);
         }
@@ -93,6 +101,10 @@ public class CliCommandParser {
 
         if (trimmed.regionMatches(true, 0, "/graph ", 0, 7)) {
             return new ParsedCommand(CommandType.GRAPH_QUERY, trimmed.substring(7).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/context") || trimmed.equalsIgnoreCase("/ctx")) {
+            return new ParsedCommand(CommandType.CONTEXT_STATUS, null);
         }
 
         if (trimmed.startsWith("/")) {

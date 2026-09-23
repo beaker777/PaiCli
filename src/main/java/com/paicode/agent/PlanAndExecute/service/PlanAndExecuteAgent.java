@@ -7,7 +7,8 @@ import com.paicode.agent.PlanAndExecute.entity.TaskRunResult;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.TaskStreamRender;
 import com.paicode.llm.entity.StreamState;
 import com.paicode.memory.service.manager.MemoryManager;
@@ -45,7 +46,7 @@ public class PlanAndExecuteAgent {
     private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger log = LoggerFactory.getLogger(PlanAndExecuteAgent.class);
 
-    private final DeepSeekClient llmClient;
+    private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final Planner planner;
     private final PlanReviewHandler reviewHandler;
@@ -80,19 +81,19 @@ public class PlanAndExecuteAgent {
             请用中文回复。
             """;
 
-    public PlanAndExecuteAgent(String apiKey) {
-        this(apiKey, ((goal, plan) -> PlanReviewDecision.execute()));
+    public PlanAndExecuteAgent(LlmClient llmClient) {
+        this(llmClient, ((goal, plan) -> PlanReviewDecision.execute()));
     }
 
-    public PlanAndExecuteAgent(String apiKey, PlanReviewHandler reviewHandler) {
-        this(new DeepSeekClient(apiKey), new ToolRegistry(), null, reviewHandler, null);
+    public PlanAndExecuteAgent(LlmClient llmClient, PlanReviewHandler reviewHandler) {
+        this(llmClient, new ToolRegistry(), null, reviewHandler, null);
     }
 
-    public PlanAndExecuteAgent(String apiKey, ToolRegistry toolRegistry, MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
-        this(new DeepSeekClient(apiKey), toolRegistry, null, reviewHandler, memoryManager);
+    public PlanAndExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
+        this(llmClient, toolRegistry, null, reviewHandler, memoryManager);
     }
 
-    public PlanAndExecuteAgent(DeepSeekClient llmClient, ToolRegistry toolRegistry, Planner planner,
+    public PlanAndExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Planner planner,
                                PlanReviewHandler reviewHandler, MemoryManager memoryManager) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry != null ? toolRegistry : new ToolRegistry();
@@ -345,6 +346,10 @@ public class PlanAndExecuteAgent {
         int iteration = 0;
         TaskStreamRender streamRender = new TaskStreamRender(task.getId(), streamState, out);
 
+        long startNano = System.nanoTime();
+        int totalInputTokens = 0;
+        int totalOutputTokens = 0;
+
         // 支持 ReAct 模式
         while (iteration < MAX_TASK_ITERATIONS) {
             iteration ++;
@@ -358,9 +363,12 @@ public class PlanAndExecuteAgent {
                     response.reasoningContent() == null ? 0 : response.reasoningContent().length(),
                     response.content() == null ? 0 : response.content().length());
 
+            totalInputTokens += response.inputTokens();
+            totalOutputTokens += response.outputTokens();
+
             // 没有工具调用, 直接返回结果
             if (!response.hasToolCalls()) {
-                memoryManager.recordTokenUsage(response.inputTokens(), response.outputTokens());
+                memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens);
 
                 // 如果最后一轮工具调用结果为空就使用之前的记录
                 if (!allResults.isEmpty() && (response.content() == null || response.content().isBlank())) {
@@ -368,7 +376,9 @@ public class PlanAndExecuteAgent {
                     if (!toolResult.isBlank()) {
                         memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "]" + toolResult);
                     }
+
                     streamRender.finish();
+                    out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
                     return TaskRunResult.of(toolResult, streamRender.hasStreamedOutput());
                 }
 
@@ -376,7 +386,9 @@ public class PlanAndExecuteAgent {
                 if (response.content() != null && !response.content().isBlank()) {
                     memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "]" + response.content());
                 }
+
                 streamRender.finish();
+                out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
                 return TaskRunResult.of(response.content(), streamRender.hasStreamedOutput());
             }
 
@@ -400,7 +412,9 @@ public class PlanAndExecuteAgent {
         if (!fallbackResult.isBlank()) {
             memoryManager.addAssistantMessage("[计划任务 " + task.getId() + "]" + fallbackResult);
         }
+
         streamRender.finish();
+        out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
         return TaskRunResult.of(fallbackResult, streamRender.hasStreamedOutput());
     }
 
@@ -551,5 +565,12 @@ public class PlanAndExecuteAgent {
         } catch (Exception e) {
             return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
         }
+    }
+
+    private static String formatTokenStats(int inputTokens, int outputTokens, long startNanos) {
+        double elapsedSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+        return AnsiStyle.subtle(String.format(
+                "📊 Token: %d 输入 / %d 输出 / %d 合计 | ⏱ %.1fs",
+                inputTokens, outputTokens, inputTokens + outputTokens, elapsedSeconds));
     }
 }

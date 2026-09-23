@@ -84,7 +84,7 @@ public class AgentStreamListener implements StreamListener {
         System.out.flush();
     }
 
-    private boolean hasStreamedOutput() {
+    public boolean hasStreamedOutput() {
         return streamedOutput;
     }
 

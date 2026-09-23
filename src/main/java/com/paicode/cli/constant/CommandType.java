@@ -19,6 +19,9 @@ public enum CommandType {
     // 清空记忆
     CLEAR,
 
+    // 切换模型
+    SWITCH_MODEL,
+
     // 切换到 plan 模式
     SWITCH_PLAN,
 
@@ -45,4 +48,7 @@ public enum CommandType {
 
     // 查找关系图谱
     GRAPH_QUERY,
+
+    // 上下文状态
+    CONTEXT_STATUS
 }

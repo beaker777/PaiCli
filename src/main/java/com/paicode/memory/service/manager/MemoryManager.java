@@ -1,6 +1,7 @@
 package com.paicode.memory.service.manager;
 
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.memory.constant.MemoryType;
 import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.service.compress.ContextCompressor;
@@ -31,15 +32,15 @@ public class MemoryManager {
     // 工具调用结果在记忆中保存的最大长度
     private static final int MAX_TOOL_RESULT_CHARS = 500;
 
-    public MemoryManager(DeepSeekClient llmClient) {
+    public MemoryManager(LlmClient llmClient) {
         this(llmClient, 200000, 32768);
     }
 
-    public MemoryManager(DeepSeekClient llmClient, int contextWindow, int shortTermBudget) {
+    public MemoryManager(LlmClient llmClient, int contextWindow, int shortTermBudget) {
         this(llmClient, null, contextWindow, shortTermBudget);
     }
 
-    public MemoryManager(DeepSeekClient llmClient, LongTermMemory longTermMemory, int contextWindow, int shortTermBudget) {
+    public MemoryManager(LlmClient llmClient, LongTermMemory longTermMemory, int contextWindow, int shortTermBudget) {
         this.shortTermMemory = new ConversationMemory(shortTermBudget);
         this.longTermMemory = longTermMemory != null ? longTermMemory : new LongTermMemory();
         this.compressor = new ContextCompressor(llmClient);

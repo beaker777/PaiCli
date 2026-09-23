@@ -2,7 +2,8 @@ package com.paicode.memory.service.compress;
 
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.constant.MemoryType;
 import com.paicode.memory.service.memorize.ConversationMemory;
@@ -21,7 +22,7 @@ import java.util.*;
  */
 public class ContextCompressor {
 
-    private final DeepSeekClient llmClient;
+    private final LlmClient llmClient;
     private final int retainRecentRounds;
 
     private static final String MAP_PROMPT = """
@@ -82,11 +83,11 @@ public class ContextCompressor {
             "版本", "模型", "接口", "配置", "环境变量", "命令", "约定", "规则", "默认"
     );
 
-    public ContextCompressor(DeepSeekClient llmClient) {
+    public ContextCompressor(LlmClient llmClient) {
         this(llmClient, 3);
     }
 
-    public ContextCompressor(DeepSeekClient llmClient, int retainRecentRounds) {
+    public ContextCompressor(LlmClient llmClient, int retainRecentRounds) {
         this.llmClient = llmClient;
         this.retainRecentRounds = retainRecentRounds;
     }

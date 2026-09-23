@@ -7,7 +7,8 @@ import com.paicode.agent.MultiAgent.constant.AgentRole;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.SubAgentStreamRenderer;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
@@ -37,7 +38,7 @@ public class SubAgent {
 
     private final String name;
     private final AgentRole role;
-    private final DeepSeekClient llmClient;
+    private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
 
@@ -118,7 +119,7 @@ public class SubAgent {
             请用中文回复。
             """;
 
-    public SubAgent(String name, AgentRole role, DeepSeekClient llmClient, ToolRegistry toolRegistry) {
+    public SubAgent(String name, AgentRole role, LlmClient llmClient, ToolRegistry toolRegistry) {
         this.name = name;
         this.role = role;
         this.llmClient = llmClient;
@@ -159,6 +160,10 @@ public class SubAgent {
 
         SubAgentStreamRenderer streamRenderer = new SubAgentStreamRenderer(name , role, out);
 
+        long startNano = System.nanoTime();
+        int totalInputTokens = 0;
+        int totalOutputTokens = 0;
+
         int iteration = 0;
         while (iteration < MAX_ITERATIONS) {
             iteration ++;
@@ -169,6 +174,9 @@ public class SubAgent {
                         shouldUseTools(role) ? toolRegistry.getTools() : null,
                         streamRenderer
                 );
+
+                totalInputTokens += response.inputTokens();
+                totalOutputTokens += response.outputTokens();
 
                 // 执行工具调用, 将结果加入记忆
                 if (response.hasToolCalls()) {
@@ -192,17 +200,20 @@ public class SubAgent {
 
                 // 没有工具调用, 返回最终结果
                 conversationHistory.add(Message.assistant(response.reasoningContent(), response.content()));
-                streamRenderer.finish();
 
+                streamRenderer.finish();
+                out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
                 return AgentMessage.result(name, role, response.content());
             } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
+
                 streamRenderer.finish();
                 return AgentMessage.error(name, role, "LLM 调用失败: " + e.getMessage());
             }
         }
 
         streamRenderer.finish();
+        out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
         return AgentMessage.error(name, role, "达到最大迭代次数限制, 任务未完成");
     }
 
@@ -306,6 +317,13 @@ public class SubAgent {
         } catch (Exception e) {
             return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
         }
+    }
+
+    private static String formatTokenStats(int inputTokens, int outputTokens, long startNanos) {
+        double elapsedSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+        return AnsiStyle.subtle(String.format(
+                "📊 Token: %d 输入 / %d 输出 / %d 合计 | ⏱ %.1fs",
+                inputTokens, outputTokens, inputTokens + outputTokens, elapsedSeconds));
     }
 
     /**

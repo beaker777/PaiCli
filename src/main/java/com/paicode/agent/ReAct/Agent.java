@@ -5,7 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.AgentStreamListener;
 import com.paicode.memory.service.manager.MemoryManager;
 import com.paicode.tool.entity.ToolExecutionResult;
@@ -13,6 +14,7 @@ import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
 import lombok.Getter;
+import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,12 +30,13 @@ import java.util.Map;
  * @Description Agent
  */
 @Getter
+@Setter
 public class Agent {
 
     private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger log = LoggerFactory.getLogger(Agent.class);
 
-    private final DeepSeekClient llmClient;
+    private LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
     private final MemoryManager memoryManager;
@@ -43,7 +46,7 @@ public class Agent {
 
     // 系统提示词
     private static final String SYSTEM_PROMPT = """
-            你是一个智能编程助手，可以帮助用户完成各种任务。
+            你是一个智能编程 PaiCode Agent，可以帮助用户完成各种任务。
 
             你可以使用以下工具来完成任务：
             1. read_file - 读取文件内容
@@ -69,21 +72,15 @@ public class Agent {
             请用中文回复用户。
             """;
 
-    public Agent(String apikey) {
-        llmClient = new DeepSeekClient(apikey);
-        toolRegistry = new ToolRegistry();
-        conversationHistory = new ArrayList<>();
-        memoryManager = new MemoryManager(llmClient);
-
-        // 添加系统提示词
-        conversationHistory.add(Message.system(SYSTEM_PROMPT));
+    public Agent(LlmClient llmClient) {
+        this(llmClient, new ToolRegistry());
     }
 
     /**
      * 外部提供 toolRegistry
      */
-    public Agent(String apiKey, ToolRegistry toolRegistry) {
-        llmClient = new DeepSeekClient(apiKey);
+    public Agent(LlmClient llmClient, ToolRegistry toolRegistry) {
+        this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         conversationHistory = new ArrayList<>();
         memoryManager = new MemoryManager(llmClient);
@@ -107,6 +104,10 @@ public class Agent {
         conversationHistory.add(Message.user(userInput));
         StringBuilder reasoningTranscript = new StringBuilder();
 
+        long startNanos = System.nanoTime();
+        int totalInputTokens = 0;
+        int totalOutputTokens = 0;
+
         int iteration = 0;
         while (iteration < MAX_ITERATIONS) {
             iteration ++;
@@ -114,6 +115,9 @@ public class Agent {
             try {
                 // 调用模型
                 ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamListener);
+
+                totalInputTokens += response.inputTokens();
+                totalOutputTokens += response.outputTokens();
 
                 // 重置渲染器的状态, 避免内容错位
                 streamListener.resetBetweenTwoIterations();
@@ -145,17 +149,25 @@ public class Agent {
                     memoryManager.addAssistantMessage(response.content());
 
                     // 记录 token 使用情况
-                    memoryManager.recordTokenUsage(response.inputTokens(), response.outputTokens());
+                    memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens);
                     log.info("ReAct run finished: inputTokens={}, outputTokens={}, reasoningChars={}, answerChars={}",
-                            response.inputTokens(),
-                            response.outputTokens(),
+                            totalInputTokens,
+                            totalOutputTokens,
                             response.reasoningContent() == null ? 0 : response.reasoningContent().length(),
                             response.content() == null ? 0 : response.content().length());
                     if (log.isDebugEnabled()) {
                         log.debug("Assistant answer preview: {}", preview(response.content(), 500));
                     }
 
-                    return formatUserFacingResponse(reasoningTranscript.toString(), response.content());
+                    String statsLine = formatTokenStats(totalInputTokens, totalOutputTokens, startNanos);
+                    if (streamListener.hasStreamedOutput()) {
+                        streamListener.finish();
+                        System.out.println(statsLine);
+                        return "";
+                    }
+
+                    return formatUserFacingResponse(reasoningTranscript.toString(), response.content())
+                            + "\n\n" + statsLine;
                 }
             } catch (Exception e) {
                 log.error("LLM call failed in ReAct loop", e);
@@ -163,8 +175,9 @@ public class Agent {
             }
         }
 
+        String stasLine = formatTokenStats(totalInputTokens, totalOutputTokens, startNanos);
         log.warn("ReAct run reached max iterations: {}", MAX_ITERATIONS);
-        return "超过最大迭代次数";
+        return "超过最大迭代次数\n\n" + stasLine;
     }
 
     private List<ToolExecutionResult> executeToolCalls(List<ToolCall> toolCalls, int iteration) {
@@ -309,5 +322,34 @@ public class Agent {
         } catch (Exception e) {
             return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
         }
+    }
+
+    private static String formatTokenStats(int inputTokens, int outputTokens, long startNanos) {
+        double elapsedSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+        return AnsiStyle.subtle(String.format(
+                "📊 Token: %d 输入 / %d 输出 / %d 合计 | ⏱ %.1fs",
+                inputTokens, outputTokens, inputTokens + outputTokens, elapsedSeconds));
+    }
+
+    public String getContextStatus() {
+        int systemCount = 0, userCount = 0, assistantCount = 0, toolCount = 0;
+        int totalChars = 0;
+        for (Message msg : conversationHistory) {
+            totalChars += msg.content() == null ? 0 : msg.content().length();
+            switch (msg.role()) {
+                case "system" -> systemCount++;
+                case "user" -> userCount++;
+                case "assistant" -> assistantCount++;
+                case "tool" -> toolCount++;
+            }
+        }
+        int totalMessages = conversationHistory.size();
+        int rounds = userCount;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("对话上下文: %d 条消息, %d 轮对话, ~%d 字符\n", totalMessages, rounds, totalChars));
+        sb.append(String.format("   system: %d / user: %d / assistant: %d / tool: %d\n", systemCount, userCount, assistantCount, toolCount));
+        sb.append(memoryManager.getSystemStatus());
+        return sb.toString();
     }
 }

@@ -7,7 +7,8 @@ import com.paicode.agent.MultiAgent.entity.ExecutionStep;
 import com.paicode.agent.MultiAgent.constant.AgentMessageType;
 import com.paicode.agent.MultiAgent.constant.AgentRole;
 import com.paicode.agent.MultiAgent.constant.StepStatus;
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.memory.service.manager.MemoryManager;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
@@ -34,26 +35,22 @@ public class AgentOrchestrator {
     private final static ObjectMapper mapper = new ObjectMapper();
     private final static int MAX_RETRIES_PER_STEP = 2;
 
-    private final DeepSeekClient llmClient;
+    private final LlmClient llmClient;
     private final SubAgent planner;
     private final List<SubAgent> workers;
     private final SubAgent reviewer;
     private final MemoryManager memoryManager;
     private final ToolRegistry toolRegistry;
 
-    public AgentOrchestrator(String apiKey) {
-        this(apiKey, new ToolRegistry());
+    public AgentOrchestrator(LlmClient llmClient) {
+        this(llmClient, new ToolRegistry());
     }
 
-    public AgentOrchestrator(String apiKey, ToolRegistry toolRegistry) {
-        this(new DeepSeekClient(apiKey), toolRegistry, new MemoryManager(new DeepSeekClient(apiKey)));
+    public AgentOrchestrator(LlmClient llmClient, ToolRegistry toolRegistry) {
+        this(llmClient, toolRegistry, new MemoryManager(llmClient));
     }
 
-    public AgentOrchestrator(String apikey, ToolRegistry toolRegistry, MemoryManager memoryManager) {
-        this(new DeepSeekClient(apikey), toolRegistry, memoryManager);
-    }
-
-    public AgentOrchestrator(DeepSeekClient llmClient, ToolRegistry toolRegistry, MemoryManager memoryManager) {
+    public AgentOrchestrator(LlmClient llmClient, ToolRegistry toolRegistry, MemoryManager memoryManager) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.memoryManager = memoryManager;

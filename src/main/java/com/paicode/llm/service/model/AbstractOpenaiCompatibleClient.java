@@ -1,4 +1,4 @@
-package com.paicode.llm.service;
+package com.paicode.llm.service.model;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,14 +16,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * @Author beaker
- * @Date 2026/9/7 21:05
- * @Description DeepSeek 客户端
+ * @Date 2026/9/23 21:33
+ * @Description 兼容 Openai 的抽象类
  */
-public class DeepSeekClient {
-
-    private static final String API_URL = "https://api.deepseek.com/chat/completions";
-    private static final String DEFAULT_MODEL = "deepseek-v4-flash";
-    private final String apiKey;
+public abstract class AbstractOpenaiCompatibleClient implements LlmClient {
 
     private static final ObjectMapper mapper = new ObjectMapper();
 
@@ -33,25 +29,20 @@ public class DeepSeekClient {
             .writeTimeout(60, TimeUnit.SECONDS)
             .build();
 
-    public DeepSeekClient(String apiKey) {
-        this.apiKey = apiKey;
-    }
+    public abstract String getApiUrl();
 
-    /**
-     * 发送聊天请求 (支持工具调用)
-     */
+    public abstract String getModel();
+
+    public abstract String getApiKey();
+
     public ChatResponse chat(List<Message> messages, List<Tool> tools) throws IOException {
         return chat(messages, tools, StreamListener.NO_OP);
-    }
-
-    public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
-        return chatStream(messages, tools, listener);
     }
 
     /**
      * 流式聊天请求, 通过 listener 持续返回增量, 最后汇总为 response
      */
-    public ChatResponse chatStream(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
+    public ChatResponse chat(List<Message> messages, List<Tool> tools, StreamListener listener) throws IOException {
         // 创建 listener
         StreamListener streamListener = listener == null ? StreamListener.NO_OP : listener;
 
@@ -63,8 +54,8 @@ public class DeepSeekClient {
 
         // 创建请求
         Request request = new Request.Builder()
-                .url(API_URL)
-                .header("Authorization", "Bearer " + apiKey)
+                .url(getApiUrl())
+                .header("Authorization", "Bearer " + getApiKey())
                 .header("Content-Type", "application/json")
                 .post(body)
                 .build();
@@ -162,7 +153,7 @@ public class DeepSeekClient {
 
     private ObjectNode buildRequestBody(List<Message> messages, List<Tool> tools, boolean stream) {
         ObjectNode requestBody = mapper.createObjectNode();
-        requestBody.put("model", DEFAULT_MODEL);
+        requestBody.put("model", getModel());
         if (stream) {
             requestBody.put("stream", true);
         }

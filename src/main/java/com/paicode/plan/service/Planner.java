@@ -4,7 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
-import com.paicode.llm.service.DeepSeekClient;
+import com.paicode.llm.service.model.LlmClient;
+import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.PlanningStreamRender;
 import com.paicode.plan.constant.TaskStatus;
 import com.paicode.plan.constant.TaskType;
@@ -21,7 +22,7 @@ import java.util.*;
  */
 public class Planner {
 
-    private final DeepSeekClient deepSeekClient;
+    private final LlmClient llmClient;
     private final ObjectMapper mapper = new ObjectMapper();
 
     // 规划提示词
@@ -67,8 +68,8 @@ public class Planner {
             只输出JSON，不要有其他内容。
             """;
 
-    public Planner(DeepSeekClient deepSeekClient) {
-        this.deepSeekClient = deepSeekClient;
+    public Planner(LlmClient llmClient) {
+        this.llmClient = llmClient;
     }
 
     public ExecutionPlan createPlan(String goal) throws IOException {
@@ -87,7 +88,7 @@ public class Planner {
 
         // 调用 LLM
         PlanningStreamRender streamRender = new PlanningStreamRender();
-        ChatResponse response = deepSeekClient.chat(messages, null, streamRender);
+        ChatResponse response = llmClient.chat(messages, null, streamRender);
         streamRender.finish();
         String planJson = response.content();
 
