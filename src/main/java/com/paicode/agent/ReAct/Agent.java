@@ -66,6 +66,18 @@ public class Agent {
         conversationHistory.add(Message.system(SYSTEM_PROMPT));
     }
 
+    /**
+     * 外部提供 toolRegistry
+     */
+    public Agent(String apiKey, ToolRegistry toolRegistry) {
+        llmClient = new DeepSeekClient(apiKey);
+        this.toolRegistry = toolRegistry;
+        conversationHistory = new ArrayList<>();
+        memoryManager = new MemoryManager(llmClient);
+
+        conversationHistory.add(Message.system(SYSTEM_PROMPT));
+    }
+
     // 运行
     public String run(String userInput) {
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
@@ -89,6 +101,9 @@ public class Agent {
             try {
                 // 调用模型
                 ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamListener);
+
+                // 重置渲染器的状态, 避免内容错位
+                streamListener.resetBetweenTwoIterations();
 
                 // 如果存在调用工具
                 if (response.hasToolCalls()) {
@@ -148,17 +163,14 @@ public class Agent {
         return "超过最大迭代次数";
     }
 
-    // 清空历史 (保留系统提示词)
+    // 清空历史 (保留系统提示词), 不影响长期记忆
     public void clearHistory() {
-        // 保存当前对话的关键事实
-        memoryManager.extractAndSaveFacts();
-
         Message systemPrompt = conversationHistory.get(0);
         conversationHistory.clear();
         conversationHistory.add(systemPrompt);
 
         // 清空短期记忆
-        memoryManager.getShortTermMemory().clear();
+        memoryManager.clearShortTerm();
     }
 
     public String getSystemStatus() {
@@ -199,7 +211,7 @@ public class Agent {
         if (normalizedAnswer.isEmpty()) {
             return "思考过程:\n" + normalizedReasoning;
         }
-        return "思考过程:\n" + normalizedReasoning + "\n\n最终结果:\n" + normalizedAnswer;
+        return "思考过程:\n" + normalizedReasoning + "\n\n回复:\n" + normalizedAnswer;
     }
 
     private String preview(String content, int maxLength) {

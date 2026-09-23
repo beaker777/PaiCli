@@ -63,6 +63,24 @@ public class TaskStreamRender implements StreamListener {
         System.out.flush();
     }
 
+    // 在两次 iteration 之间调用
+    public synchronized void resetBetweenIterations() {
+        if (reasoningRenderer != null) {
+            reasoningRenderer.finish();
+            reasoningRenderer = null;
+        }
+        if (contentRenderer != null) {
+            contentRenderer.finish();
+            contentRenderer = null;
+        }
+
+        reasoningStarted = false;
+        contentStarted = false;
+        if (streamedOutput) {
+            System.out.println();
+        }
+    }
+
     public synchronized void finish() {
         if (streamedOutput) {
             if (reasoningRenderer != null) {

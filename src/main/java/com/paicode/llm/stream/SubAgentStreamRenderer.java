@@ -96,9 +96,42 @@ public class SubAgentStreamRenderer implements StreamListener {
     private String contentLabel() {
         return switch (role) {
             case PLANNER -> "规划结果";
-            case WORKER -> "执行结果";
+            case WORKER -> "执行输出";
             case REVIEWER -> "审查结果";
         };
+    }
+
+    /**
+     * 在两次迭代之间调用, 避免出现上一轮的内容和下一轮错位的问题
+     */
+    public void resetBetweenTwoIterations() {
+        if (reasoningRenderer != null) {
+            reasoningRenderer.finish();
+            reasoningRenderer = null;
+        }
+        if (contentRenderer != null) {
+            contentRenderer.finish();
+            contentRenderer = null;
+        }
+
+        // 直接 flush late reasoning
+        String late = lateReasoning.toString().trim();
+        if (!late.isEmpty()) {
+            System.out.println();
+            System.out.println(AnsiStyle.heading("补充思考"));
+            TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(System.out);
+            r.append(late);
+            r.finish();
+            lateReasoning.setLength(0);
+            streamedOutput = true;
+        }
+
+        pendingReasoning.setLength(0);
+        reasoningStarted = false;
+        contentStarted = false;
+        if (streamedOutput) {
+            System.out.println();
+        }
     }
 
     public void finish() {

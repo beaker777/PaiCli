@@ -53,14 +53,27 @@ public class MemoryRetriever {
     }
 
     /**
+     * 仅从长期记忆中检索 facts, 用于 system prompt 注入
+     */
+    public List<MemoryEntry> retrieveLongTerm(String query, int limit) {
+        return longTermMemory.getAll().stream()
+                .map(entry -> new ScoredEntry(entry, computeRelevanceScore(entry, query) * 1.2, false))
+                .filter(scoredEntry -> scoredEntry.score() > 0)
+                .sorted(Comparator.comparingDouble(ScoredEntry::score).reversed())
+                .limit(limit)
+                .map(ScoredEntry::entry)
+                .toList();
+    }
+
+    /**
      * 构建上下文: 将相关记忆组装成文本, 用于注入到 LLM 的 system prompt 中
      */
     public String buildContextForQuery(String query, int maxTokens) {
-        List<MemoryEntry> relevant = retrieve(query, 10);
+        List<MemoryEntry> relevant = retrieveLongTerm(query, 10);
         if (relevant.isEmpty()) return "";
 
         StringBuilder context = new StringBuilder();
-        context.append("## 相关记忆\n\n");
+        context.append("## 相关长期记忆\n\n");
 
         int usedTokens = 0;
         for (MemoryEntry entry : relevant) {

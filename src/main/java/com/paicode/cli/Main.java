@@ -13,6 +13,8 @@ import com.paicode.cli.parser.DTO.ParsedCommand;
 import com.paicode.cli.parser.PlanReviewInputParser;
 import com.paicode.cli.parser.constant.CommandType;
 import com.paicode.agent.PlanAndExecute.service.review.DTO.PlanReviewDecision;
+import com.paicode.hitl.HitlToolRegistry;
+import com.paicode.hitl.TerminalHitlHandler;
 import com.paicode.plan.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.review.PlanReviewHandler;
 import com.paicode.rag.CodeIndex;
@@ -40,12 +42,12 @@ import java.util.List;
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
- * @Description PaiCode v5.0 - Multi-Agent Collaborate CLI
- * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent
+ * @Description PaiCode v6.0 - Human-In-The-Loop CLI
+ * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL 审批
  */
 public class Main {
 
-    private static final String VERSION = "5.0.0";
+    private static final String VERSION = "6.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -85,8 +87,12 @@ public class Main {
                     .build();
             lineReader.option(LineReader.Option.BRACKETED_PASTE, true);
 
+            // 创建 HITL 处理器 (默认关闭)
+            TerminalHitlHandler hitlHandler = new TerminalHitlHandler(false);
+            HitlToolRegistry hitlToolRegistry = new HitlToolRegistry(hitlHandler);
+
             // 默认使用 ReAct 模式
-            Agent reactAgent = new Agent(apiKey);
+            Agent reactAgent = new Agent(apiKey, hitlToolRegistry);
             System.out.println("使用 ReAct 模式\n");
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
@@ -130,7 +136,7 @@ public class Main {
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         System.out.println("未知命令: " + command.payload());
-                        System.out.println("可用命令: /plan, /team, /clear, /memory, /save, /index, /search, /graph, /exit\n");
+                        System.out.println("可用命令: /plan, /team, /hitl, /clear, /memory, /memory clear, /save, /index, /search, /graph, /exit\n");
                         continue;
                     }
                     case EXIT -> {
@@ -139,12 +145,21 @@ public class Main {
                     }
                     case CLEAR -> {
                         reactAgent.clearHistory();
-                        System.out.println("对话历史已清空\n");
+                        hitlHandler.clearApprovedAll();
+                        System.out.println("对话历史已清空, 长期记忆不变\n");
                         continue;
                     }
                     case MEMORY_STATUS -> {
                         System.out.println("记忆状态: ");
                         System.out.println(reactAgent.getSystemStatus());
+                        System.out.println("   /memory clear - 清空长期记忆");
+                        System.out.println("   /save <事实> - 手动保存到长期记忆");
+                        System.out.println();
+                        continue;
+                    }
+                    case MEMORY_CLEAR -> {
+                        reactAgent.getMemoryManager().clearLongTerm();
+                        System.out.println("长期记忆已清空");
                         System.out.println();
                         continue;
                     }
@@ -177,6 +192,24 @@ public class Main {
                         }
 
                         input = command.payload();
+                    }
+                    case SWITCH_HITL -> {
+                        String payload = command.payload();
+                        if ("on".equals(payload)) {
+                            hitlHandler.setEnabled(true);
+                            System.out.println("HITL 审批已启用");
+                        } else if ("off".equals(payload)) {
+                            hitlHandler.setEnabled(false);
+                            hitlHandler.clearApprovedAll();
+                            System.out.println("HITL 审批已关闭, 危险命令将自动执行");
+                        } else {
+                            String status = hitlHandler.isEnabled() ? "启用" : "关闭";
+                            System.out.println("🔒 HITL 当前状态：" + status);
+                            System.out.println("   /hitl on  - 启用人工审批");
+                            System.out.println("   /hitl off - 关闭人工审批\n");
+                        }
+
+                        continue;
                     }
                     case INDEX_CODE -> {
                         String indexPath = command.payload() != null ? command.payload() : ".";
@@ -261,7 +294,7 @@ public class Main {
                 System.out.println();
                 String response;
                 if (nextTaskUsePlanMode || command.type() == CommandType.SWITCH_PLAN) {
-                    PlanAndExecuteAgent planAgent = createPlanAgent(apiKey, terminal, lineReader);
+                    PlanAndExecuteAgent planAgent = createPlanAgent(apiKey, reactAgent, terminal, lineReader);
                     response = planAgent.run(input);
                     nextTaskUsePlanMode = false;
                 } else if (nextTaskUseTeamMode || command.type() == CommandType.SWITCH_TEAM) {
@@ -464,9 +497,18 @@ public class Main {
         return key == '\n' || key == '\r';
     }
 
-    private static PlanAndExecuteAgent createPlanAgent(String apiKey, Terminal terminal, LineReader lineReader) {
+    private static PlanAndExecuteAgent createPlanAgent(String apiKey, Agent reactAgent, Terminal terminal, LineReader lineReader) {
         System.out.println("使用 PlanAndExecute-and-Execute 模式\n");
-        return new PlanAndExecuteAgent(apiKey, createPlanReviewHandler(terminal, lineReader));
+        return createPlanAgent(apiKey, reactAgent, createPlanReviewHandler(terminal, lineReader));
+    }
+
+    private static PlanAndExecuteAgent createPlanAgent(String apiKey, Agent reactAgent, PlanReviewHandler reviewHandler) {
+        return new PlanAndExecuteAgent(
+                apiKey,
+                reactAgent.getToolRegistry(),
+                reactAgent.getMemoryManager(),
+                reviewHandler
+        );
     }
 
     private static PlanReviewHandler createPlanReviewHandler(Terminal terminal, LineReader lineReader) {
@@ -605,7 +647,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      Multi-Agent CLI %-36s║%n", "v" + VERSION);
+        System.out.printf("║      HITL Approval CLI %-34s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -714,17 +756,20 @@ public class Main {
     private static List<String> startupHints() {
         return List.of(
                 "输入你的问题或任务",
-                "输入 '/plan' 后，下一条任务使用 PlanAndExecute-and-Execute 模式",
+                "输入 '/plan' 后，下一条任务使用 Plan-and-Execute 模式",
                 "输入 '/plan 任务内容' 直接用计划模式执行这条任务",
                 "输入 '/team' 后，下一条任务使用 Multi-Agent 协作模式",
                 "输入 '/team 任务内容' 直接用多 Agent 协作执行这条任务",
                 "计划生成后可直接执行、补充要求重规划，或取消",
+                "输入 '/hitl on' 启用危险操作人工审批（HITL）",
+                "输入 '/hitl off' 关闭 HITL 审批",
                 "输入 '/index [路径]' 为代码库建立向量索引",
                 "输入 '/search <查询>' 语义检索代码",
                 "输入 '/graph <类名>' 查看代码关系图谱",
                 "默认模式是 ReAct",
                 "输入 '/clear' 清空对话历史",
                 "输入 '/memory' 查看记忆状态",
+                "输入 '/memory clear' 清空长期记忆",
                 "输入 '/save 事实内容' 手动保存关键事实",
                 "输入 '/exit' 或 '/quit' 退出"
         );

@@ -76,6 +76,10 @@ public class PlanAndExecuteAgent {
         this(new DeepSeekClient(apiKey), new ToolRegistry(), null, reviewHandler, null);
     }
 
+    public PlanAndExecuteAgent(String apiKey, ToolRegistry toolRegistry, MemoryManager memoryManager, PlanReviewHandler reviewHandler) {
+        this(new DeepSeekClient(apiKey), toolRegistry, null, reviewHandler, memoryManager);
+    }
+
     public PlanAndExecuteAgent(DeepSeekClient llmClient, ToolRegistry toolRegistry, Planner planner,
                                PlanReviewHandler reviewHandler, MemoryManager memoryManager) {
         this.llmClient = llmClient;
@@ -95,9 +99,6 @@ public class PlanAndExecuteAgent {
             PlanRunOutcome outcome = runWithPlan(userInput, streamState);
             if (outcome.persistAssistantMessage() && outcome.result() != null && !outcome.result().isBlank()) {
                 memoryManager.addAssistantMessage("[计划结果]" + outcome.result());
-            }
-            if (outcome.extractFacts()) {
-                memoryManager.extractAndSaveFacts();
             }
 
             if (streamState.hasStreamedOutput() && (outcome.result() == null || outcome.result().isBlank())) {
@@ -351,6 +352,9 @@ public class PlanAndExecuteAgent {
 
             // 调用工具, 将 toolCalls 和 toolResult 写入历史
             messages.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
+
+            // 重置渲染器状态
+            streamRender.resetBetweenIterations();
 
             for (ToolCall toolCall : response.toolCalls()) {
                 String name = toolCall.function().name();

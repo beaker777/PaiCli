@@ -165,6 +165,8 @@ public class SubAgent {
                             response.toolCalls()
                     ));
 
+                    streamRenderer.resetBetweenTwoIterations();
+
                     for (ToolCall toolCall : response.toolCalls()) {
                         String toolName = toolCall.function().name();
                         String toolArgs = toolCall.function().arguments();

@@ -39,6 +39,26 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.SWITCH_PLAN, trimmed.substring(6).trim());
         }
 
+        if (trimmed.equalsIgnoreCase("/team")) {
+            return new ParsedCommand(CommandType.SWITCH_TEAM, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/team ", 0, 6)) {
+            return new ParsedCommand(CommandType.SWITCH_TEAM, trimmed.substring(6).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/hitl")) {
+            return new ParsedCommand(CommandType.SWITCH_HITL, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/hitl on")) {
+            return new ParsedCommand(CommandType.SWITCH_HITL, "on");
+        }
+
+        if (trimmed.equalsIgnoreCase("/hitl off")) {
+            return new ParsedCommand(CommandType.SWITCH_HITL, "off");
+        }
+
         if (trimmed.equalsIgnoreCase("/memory") || trimmed.equalsIgnoreCase("/mem")) {
             return new ParsedCommand(CommandType.MEMORY_STATUS, null);
         }
@@ -49,6 +69,10 @@ public class CliCommandParser {
 
         if (trimmed.regionMatches(true, 0, "/save ", 0, 6)) {
             return new ParsedCommand(CommandType.MEMORY_SAVE, trimmed.substring(6).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/memory clear") || trimmed.equalsIgnoreCase("/mem clear")) {
+            return new ParsedCommand(CommandType.MEMORY_CLEAR, null);
         }
 
         if (trimmed.regionMatches(true, 0, "/index ", 0, 7)) {
@@ -69,14 +93,6 @@ public class CliCommandParser {
 
         if (trimmed.regionMatches(true, 0, "/graph ", 0, 7)) {
             return new ParsedCommand(CommandType.GRAPH_QUERY, trimmed.substring(7).trim());
-        }
-
-        if (trimmed.equalsIgnoreCase("/team")) {
-            return new ParsedCommand(CommandType.SWITCH_TEAM, null);
-        }
-
-        if (trimmed.regionMatches(true, 0, "/tram ", 0, 6)) {
-            return new ParsedCommand(CommandType.SWITCH_TEAM, trimmed.substring(6).trim());
         }
 
         if (trimmed.startsWith("/")) {
