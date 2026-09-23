@@ -1,5 +1,7 @@
 package com.paicode.agent.PlanAndExecute;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.agent.PlanAndExecute.DTO.PlanRunOutcome;
 import com.paicode.agent.PlanAndExecute.service.task.DTO.TaskRunResult;
 import com.paicode.llm.DTO.ChatResponse;
@@ -16,11 +18,17 @@ import com.paicode.agent.PlanAndExecute.service.review.PlanReviewHandler;
 import com.paicode.plan.Planner;
 import com.paicode.plan.Task;
 import com.paicode.agent.PlanAndExecute.service.review.constant.PlanReviewAction;
+import com.paicode.tool.DTO.ToolExecutionResult;
+import com.paicode.tool.DTO.ToolInvocation;
 import com.paicode.tool.ToolRegistry;
+import com.paicode.utils.AnsiStyle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -35,7 +43,9 @@ import java.util.stream.Collectors;
  */
 public class PlanAndExecuteAgent {
 
+    private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger log = LoggerFactory.getLogger(PlanAndExecuteAgent.class);
+
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
     private final Planner planner;
@@ -64,6 +74,9 @@ public class PlanAndExecuteAgent {
             如果是ANALYSIS或VERIFICATION类型任务，请直接输出分析结果，不需要调用工具。
             对于当前项目内的文件和代码, 请优先使用 read_file, list_dir, search_code.
             execute_command 只适合在当前项目目录执行短时间的命令, (如 git status, mvn test), 不要用它扫描整个文件系统.
+            同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
+            如果需要同时检查多个已知且互不依赖的文件或目录（例如同时读取 pom.xml、README.md、ROADMAP.md，
+            或同时列出 src/main/java、src/test/java、src/main/resources），请在同一轮返回多个 read_file/list_dir 工具调用。
 
             请用中文回复。
             """;
@@ -244,7 +257,7 @@ public class PlanAndExecuteAgent {
             task.markStarted();
 
             try {
-                return List.of(TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState)));
+                return List.of(TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState, System.out)));
             } catch (Exception e) {
                 return List.of(TaskExecutionResult.failure(task, e));
             }
@@ -258,16 +271,24 @@ public class PlanAndExecuteAgent {
         System.out.println("> 本轮并行执行: " + executableTasks.size() + " 个任务: " + parallelTaskIds);
 
         // 创建线程池, 并行执行任务
-        ExecutorService executor = Executors.newFixedThreadPool(executableTasks.size());
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(executableTasks.size(), 4), r -> {
+            Thread t = new Thread(r, "paicode-plan-executor");
+            t.setDaemon(true);
+            return t;
+        });
         try {
+            Map<String, ByteArrayOutputStream> buffers = new LinkedHashMap<>();
             List<Future<TaskExecutionResult>> futures = new ArrayList<>();
             for (Task task : executableTasks) {
                 System.out.println("> 并行任务 [" + task.getId() + "]: " + task.getDescription());
                 task.markStarted();
 
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                buffers.put(task.getId(), baos);
+                PrintStream taskOut = new PrintStream(baos, true, StandardCharsets.UTF_8);
                 futures.add(executor.submit(() -> {
                     try {
-                        return TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState));
+                        return TaskExecutionResult.success(task, executeTask(plan.getGoal(), plan, task, streamState, taskOut));
                     } catch (Exception e) {
                         return TaskExecutionResult.failure(task, e);
                     }
@@ -288,6 +309,16 @@ public class PlanAndExecuteAgent {
                     results.add(TaskExecutionResult.failure(executableTasks.get(results.size()), error));
                 }
             }
+
+            // 按任务顺序 flush 缓冲区到 stdout, 避免出错
+            for (Task task : executableTasks) {
+                ByteArrayOutputStream buf = buffers.get(task.getId());
+                if (buf != null && buf.size() > 0) {
+                    System.out.println(buf.toString(StandardCharsets.UTF_8));
+                    System.out.flush();
+                }
+            }
+
             return results;
         } finally {
             executor.shutdown();
@@ -295,7 +326,7 @@ public class PlanAndExecuteAgent {
     }
 
     // 执行任务, 支持 ReAct 模式
-    private TaskRunResult executeTask(String goal, ExecutionPlan plan, Task task, StreamState streamState) throws IOException {
+    private TaskRunResult executeTask(String goal, ExecutionPlan plan, Task task, StreamState streamState, PrintStream out) throws IOException {
         // 构建提示词
         String prompt = String.format(EXECUTION_PROMPT, task.getTaskType(), task.getDescription());
 
@@ -313,7 +344,7 @@ public class PlanAndExecuteAgent {
 
         StringBuilder allResults = new StringBuilder();
         int iteration = 0;
-        TaskStreamRender streamRender = new TaskStreamRender(task.getId(), streamState);
+        TaskStreamRender streamRender = new TaskStreamRender(task.getId(), streamState, out);
 
         // 支持 ReAct 模式
         while (iteration < MAX_TASK_ITERATIONS) {
@@ -351,22 +382,17 @@ public class PlanAndExecuteAgent {
             }
 
             // 调用工具, 将 toolCalls 和 toolResult 写入历史
+            printToolCalls(out, response.toolCalls());
             messages.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
 
             // 重置渲染器状态
             streamRender.resetBetweenIterations();
 
-            for (ToolCall toolCall : response.toolCalls()) {
-                String name = toolCall.function().name();
-                String arguments = toolCall.function().arguments();
-                log.info("Task {} calling tool {}", task.getId(), name);
-                log.debug("Task {} tool args [{}]: {}", task.getId(), name, arguments);
-
-                String result = toolRegistry.executeTool(name, arguments);
-                log.debug("Task {} tool result preview [{}]: {}", task.getId(), name, preview(result, 300));
-                memoryManager.addToolResult(name, result);
-                allResults.append(result).append("\n");
-                messages.add(Message.tool(toolCall.id(), result));
+            List<ToolExecutionResult> toolResults = executeToolCalls(task.getId(), response.toolCalls());
+            for (ToolExecutionResult toolResult : toolResults) {
+                memoryManager.addToolResult(toolResult.name(), toolResult.result());
+                allResults.append(toolResult.result()).append("\n");
+                messages.add(Message.tool(toolResult.id(), toolResult.result()));
             }
         }
 
@@ -377,6 +403,26 @@ public class PlanAndExecuteAgent {
         }
         streamRender.finish();
         return TaskRunResult.of(fallbackResult, streamRender.hasStreamedOutput());
+    }
+
+    private List<ToolExecutionResult> executeToolCalls(String taskId, List<ToolCall> toolCalls) {
+        List<ToolInvocation> invocations = new ArrayList<>();
+        for (ToolCall toolCall : toolCalls) {
+            String toolName = toolCall.function().name();
+            String toolArgs = toolCall.function().arguments();
+            log.info("Task {} scheduling tool {}", taskId, toolName);
+            log.debug("Task {} tool args [{}]: {}", taskId, toolName, toolArgs);
+            invocations.add(new ToolInvocation(toolCall.id(), toolName, toolArgs));
+        }
+
+        if (invocations.size() > 1) {
+            log.info("Task {} executing {} tool calls in parallel", taskId, invocations.size());
+        }
+        List<ToolExecutionResult> results = toolRegistry.executeTools(invocations);
+        for (ToolExecutionResult result : results) {
+            log.debug("Task {} tool result preview [{}]: {}", taskId, result.name(), preview(result.result(), 300));
+        }
+        return results;
     }
 
     private String preview(String content, int maxLength) {
@@ -453,5 +499,58 @@ public class PlanAndExecuteAgent {
                 .reduce((first, second) -> second)
                 .map(Task::getResult)
                 .orElse("");
+    }
+
+    private static void printToolCalls(PrintStream out, List<ToolCall> toolCalls) {
+        Map<String, List<ToolCall>> grouped = new LinkedHashMap<>();
+        for (ToolCall tc : toolCalls) {
+            grouped.computeIfAbsent(tc.function().name(), k -> new ArrayList<>()).add(tc);
+        }
+        for (var group : grouped.entrySet()) {
+            String toolName = group.getKey();
+            List<ToolCall> calls = group.getValue();
+            out.println(AnsiStyle.subtle("  " + toolLabel(toolName, calls.size())));
+            for (ToolCall tc : calls) {
+                String detail = extractKeyParam(toolName, tc.function().arguments());
+                if (!detail.isEmpty()) {
+                    out.println(AnsiStyle.subtle("    └ " + detail));
+                }
+            }
+        }
+    }
+
+    private static String toolLabel(String toolName, int count) {
+        return switch (toolName) {
+            case "read_file" -> "📖 读取 " + count + " 个文件";
+            case "write_file" -> "✏️ 写入 " + count + " 个文件";
+            case "list_dir" -> "📂 列出 " + count + " 个目录";
+            case "execute_command" -> "⚡ 执行 " + count + " 条命令";
+            case "create_project" -> "🏗️ 创建 " + count + " 个项目";
+            case "search_code" -> "🔍 搜索代码 " + count + " 次";
+            default -> "🔧 " + toolName + " × " + count;
+        };
+    }
+
+    private static String extractKeyParam(String toolName, String argsJson) {
+        try {
+            JsonNode node = mapper.readTree(argsJson);
+            String key = switch (toolName) {
+                case "read_file", "write_file", "list_dir" -> "path";
+                case "execute_command" -> "command";
+                case "create_project" -> "name";
+                case "search_code" -> "query";
+                default -> null;
+            };
+            if (key == null) {
+                return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
+            }
+            String value = node.path(key).asText("");
+            if (value.length() > 80) {
+                value = value.substring(0, 77) + "...";
+            }
+            return value;
+        } catch (Exception e) {
+            return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
+        }
     }
 }

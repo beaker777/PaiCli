@@ -515,7 +515,7 @@ public class AgentOrchestrator {
                 log.error("Parallel step task failed", e.getCause());
             }
         }
-        executor.shutdown();
+        executor.shutdownNow();
 
         // 输出结果, 按 step_id 的顺序 flush 输出
         for (ExecutionStep step : batch) {

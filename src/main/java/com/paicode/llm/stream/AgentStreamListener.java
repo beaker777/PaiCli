@@ -15,6 +15,7 @@ public class AgentStreamListener implements StreamListener {
     private final StringBuilder lateReasoning = new StringBuilder();
     private TerminalMarkdownRenderer reasoningRenderer;
     private TerminalMarkdownRenderer contentRenderer;
+    private boolean reasoningHeadingPrinted;
     private boolean reasoningStarted;
     private boolean contentStarted;
     private boolean streamedOutput;
@@ -34,8 +35,12 @@ public class AgentStreamListener implements StreamListener {
             if (pendingReasoning.toString().isBlank()) {
                 return;
             }
+            if (!containsLineBreak(pendingReasoning)) {
+                return;
+            }
 
-            System.out.println(AnsiStyle.heading("思考过程"));
+            printReasoningHeadingIfNeeded();
+
             reasoningRenderer = new TerminalMarkdownRenderer(System.out);
             reasoningRenderer.append(pendingReasoning.toString());
             pendingReasoning.setLength(0);
@@ -59,7 +64,8 @@ public class AgentStreamListener implements StreamListener {
                 reasoningRenderer.finish();
                 System.out.println();
             } else if (!pendingReasoning.isEmpty() && !pendingReasoning.toString().isBlank()) {
-                System.out.println(AnsiStyle.heading("思考过程"));
+                printReasoningHeadingIfNeeded();
+
                 TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(System.out);
                 r.append(pendingReasoning.toString());
                 r.finish();
@@ -89,6 +95,8 @@ public class AgentStreamListener implements StreamListener {
         if (reasoningRenderer != null) {
             reasoningRenderer.finish();
             reasoningRenderer = null;
+        } else {
+            flushPendingReasoning();
         }
         if (contentRenderer != null) {
             contentRenderer.finish();
@@ -118,6 +126,8 @@ public class AgentStreamListener implements StreamListener {
     public void finish() {
         if (reasoningRenderer != null) {
             reasoningRenderer.finish();
+        } else {
+            flushPendingReasoning();
         }
         if (contentRenderer != null) {
             contentRenderer.finish();
@@ -136,5 +146,37 @@ public class AgentStreamListener implements StreamListener {
         if (streamedOutput) {
             System.out.println();
         }
+    }
+
+    private boolean containsLineBreak(CharSequence content) {
+        for (int i = 0; i < content.length(); i++) {
+            char ch = content.charAt(i);
+            if (ch == '\n' || ch == '\r') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void printReasoningHeadingIfNeeded() {
+        if (!reasoningHeadingPrinted) {
+            System.out.println(AnsiStyle.heading("🧠 思考过程"));
+            reasoningHeadingPrinted = true;
+        }
+    }
+
+    private void flushPendingReasoning() {
+        String pending = pendingReasoning.toString();
+        if (pending.isBlank()) {
+            pendingReasoning.setLength(0);
+            return;
+        }
+
+        printReasoningHeadingIfNeeded();
+        TerminalMarkdownRenderer renderer = new TerminalMarkdownRenderer(System.out);
+        renderer.append(pending);
+        renderer.finish();
+        pendingReasoning.setLength(0);
+        streamedOutput = true;
     }
 }

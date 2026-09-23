@@ -1,18 +1,27 @@
 package com.paicode.agent.ReAct;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.DTO.ChatResponse;
 import com.paicode.llm.DTO.Message;
 import com.paicode.llm.DTO.ToolCall;
 import com.paicode.llm.DeepSeekClient;
 import com.paicode.llm.stream.AgentStreamListener;
 import com.paicode.memory.MemoryManager;
+import com.paicode.tool.DTO.ToolExecutionResult;
+import com.paicode.tool.DTO.ToolInvocation;
 import com.paicode.tool.ToolRegistry;
+import com.paicode.utils.AnsiStyle;
 import lombok.Getter;
+import org.jline.jansi.Ansi;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.PrintStream;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * @Author beaker
@@ -22,7 +31,9 @@ import java.util.List;
 @Getter
 public class Agent {
 
+    private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger log = LoggerFactory.getLogger(Agent.class);
+
     private final DeepSeekClient llmClient;
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
@@ -47,6 +58,9 @@ public class Agent {
             使用工具后，根据工具返回的结果继续思考下一步行动。
             对于当前项目内的文件和代码, 请优先使用 read_file, list_dir, search_code.
             execute_command 只适合在当前项目目录执行短时间的命令, (如 git status, mvn test), 不要用它扫描整个文件系统.
+            同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
+            如果需要同时检查多个已知且互不依赖的文件或目录（例如同时读取 pom.xml、README.md、ROADMAP.md，
+            或同时列出 src/main/java、src/test/java、src/main/resources），请在同一轮返回多个 read_file/list_dir 工具调用。
             
             如果用户询问和代码库相关的问题 (如"这个类是干什么的", "哪里用了某个功能").
             请优先使用 search_code 工具检索相关代码, 再基于检索结果回答.
@@ -110,26 +124,17 @@ public class Agent {
                     log.info("LLM requested {} tool call(s) in iteration {}", response.toolCalls().size(), iteration);
                     appendReasoning(reasoningTranscript, response.reasoningContent());
 
+                    // 输出 toolCall 内容
+                    printToolCalls(System.out, response.toolCalls());
+
                     // 添加信息
                     conversationHistory.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
 
-                    for (ToolCall toolCall : response.toolCalls()) {
-                        log.info("Executing tool: {} (iteration={})", toolCall.function().name(), iteration);
-                        log.debug("Tool args [{}]: {}", toolCall.function().name(), toolCall.function().arguments());
-
-                        String name = toolCall.function().name();
-                        String toolArgs = toolCall.function().arguments();
-
-                        // 执行工具
-                        String toolResult = toolRegistry.executeTool(name, toolArgs);
-                        log.debug("Tool result preview [{}]: {}", toolCall.function().name(), preview(toolResult, 300));
-
-
-                        // 将工具调用结果存入记忆
-                        memoryManager.addToolResult(name, toolResult);
-
-                        // 将工具调用结果添加到历史
-                        conversationHistory.add(Message.tool(toolCall.id(), toolResult));
+                    // 调用工具
+                    List<ToolExecutionResult> results = executeToolCalls(response.toolCalls(), iteration);
+                    for (ToolExecutionResult result : results) {
+                        memoryManager.addToolResult(result.name(), result.result());
+                        conversationHistory.add(Message.tool(result.id(), result.result()));
                     }
                 } else {
                     appendReasoning(reasoningTranscript, response.reasoningContent());
@@ -161,6 +166,26 @@ public class Agent {
 
         log.warn("ReAct run reached max iterations: {}", MAX_ITERATIONS);
         return "超过最大迭代次数";
+    }
+
+    private List<ToolExecutionResult> executeToolCalls(List<ToolCall> toolCalls, int iteration) {
+        List<ToolInvocation> invocations = new ArrayList<>();
+        for (ToolCall toolCall : toolCalls) {
+            String toolName = toolCall.function().name();
+            String toolArgs = toolCall.function().arguments();
+            log.info("Scheduling tool: {} (iteration={})", toolName, iteration);
+            log.debug("Tool args [{}]: {}", toolName, toolArgs);
+            invocations.add(new ToolInvocation(toolCall.id(), toolName, toolArgs));
+        }
+
+        if (invocations.size() > 1) {
+            log.info("Executing {} tool calls in parallel (iteration={})", invocations.size(), iteration);
+        }
+        List<ToolExecutionResult> results = toolRegistry.executeTools(invocations);
+        for (ToolExecutionResult result : results) {
+            log.debug("Tool result preview [{}]: {}", result.name(), preview(result.result(), 300));
+        }
+        return results;
     }
 
     // 清空历史 (保留系统提示词), 不影响长期记忆
@@ -225,5 +250,65 @@ public class Agent {
         }
 
         return normalized.substring(0, maxLength) + "...";
+    }
+
+    /**
+     * 按照工具类型分组输出 ToolCall 内容
+     */
+    private static void printToolCalls(PrintStream out, List<ToolCall> toolCalls) {
+        Map<String, List<ToolCall>> grouped = new LinkedHashMap<>();
+        for (ToolCall toolCall : toolCalls) {
+            grouped.computeIfAbsent(toolCall.function().name(), k -> new ArrayList<>()).add(toolCall);
+        }
+
+        for (Map.Entry<String, List<ToolCall>> group : grouped.entrySet()) {
+            String toolName = group.getKey();
+            List<ToolCall> calls = group.getValue();
+            out.println(AnsiStyle.subtle("  " + toolLabel(toolName, calls.size())));
+
+            for (ToolCall call : calls) {
+                String detail = extractKeyParam(toolName, call.function().arguments());
+                if (!detail.isEmpty()) {
+                    out.println(AnsiStyle.subtle("    └ " + detail));
+                }
+            }
+        }
+    }
+
+    private static String toolLabel(String toolName, int count) {
+        return switch (toolName) {
+            case "read_file" -> "📖 读取 " + count + " 个文件";
+            case "write_file" -> "✏️ 写入 " + count + " 个文件";
+            case "list_dir" -> "📂 列出 " + count + " 个目录";
+            case "execute_command" -> "⚡ 执行 " + count + " 条命令";
+            case "create_project" -> "🏗️ 创建 " + count + " 个项目";
+            case "search_code" -> "🔍 搜索代码 " + count + " 次";
+            default -> "🔧 " + toolName + " × " + count;
+        };
+    }
+
+    private static String extractKeyParam(String toolName, String argsJson) {
+        try {
+            JsonNode node = mapper.readTree(argsJson);
+            String key = switch (toolName) {
+                case "read_file", "write_file", "list_dir" -> "path";
+                case "execute_command" -> "command";
+                case "create_project" -> "name";
+                case "search_code" -> "query";
+                default -> null;
+            };
+
+            if (key == null) {
+                return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
+            }
+
+            String value = node.path(key).asText("");
+            if (value.length() > 80) {
+                value = value.substring(0, 77) + "...";
+            }
+            return value;
+        } catch (Exception e) {
+            return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
+        }
     }
 }

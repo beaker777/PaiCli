@@ -1,7 +1,10 @@
 package com.paicode.llm.stream;
 
 import com.paicode.llm.stream.entity.StreamState;
+import com.paicode.utils.AnsiStyle;
 import com.paicode.utils.TerminalMarkdownRenderer;
+
+import java.io.PrintStream;
 
 /**
  * @Author beaker
@@ -12,55 +15,78 @@ public class TaskStreamRender implements StreamListener {
 
     private final String taskId;
     private final StreamState streamState;
+    private final PrintStream out;
+    private final StringBuilder pendingReasoning = new StringBuilder();
+    private final StringBuilder lateReasoning = new StringBuilder();
     private TerminalMarkdownRenderer reasoningRenderer;
     private TerminalMarkdownRenderer contentRenderer;
     private boolean reasoningStarted;
     private boolean contentStarted;
     private boolean streamedOutput;
 
-    public TaskStreamRender(String taskId, StreamState streamState) {
+    public TaskStreamRender(String taskId, StreamState streamState, PrintStream out) {
         this.taskId = taskId;
         this.streamState = streamState;
+        this.out = out;
     }
 
     @Override
     public void onReasoningDelta(String delta) {
-        if (delta == null || delta.isBlank()) {
+        if (delta == null || delta.isEmpty()) {
             return;
         }
 
+        if (contentStarted) {
+            lateReasoning.append(delta);
+            return;
+        }
         if (!reasoningStarted) {
-            System.out.println("任务思考 [" + taskId + "]");
-            reasoningRenderer = new TerminalMarkdownRenderer(System.out);
+            pendingReasoning.append(delta);
+            if (pendingReasoning.toString().isBlank()) {
+                return;
+            }
+
+            out.println(AnsiStyle.heading("🧠 任务思考 [" + taskId + "]"));
+            reasoningRenderer = new TerminalMarkdownRenderer(out);
+            reasoningRenderer.append(pendingReasoning.toString());
+            pendingReasoning.setLength(0);
             reasoningStarted = true;
             streamedOutput = true;
             streamState.markStreamed();
+        } else {
+            reasoningRenderer.append(delta);
         }
-        reasoningRenderer.append(delta);
-
-        System.out.flush();
+        out.flush();
     }
 
     @Override
     public void onContentDelta(String delta) {
-        if (delta == null || delta.isBlank()) {
+        if (delta == null || delta.isEmpty()) {
             return;
         }
 
         if (!contentStarted) {
-            if (!reasoningStarted) {
-                System.out.println("任务结果 [" + taskId + "]");
-            } else {
-                System.out.println();
-                System.out.println("任务结果 [" + taskId + "]");
+            if (reasoningStarted && reasoningRenderer != null) {
+                reasoningRenderer.finish();
+                out.println();
+            } else if (!pendingReasoning.isEmpty() && !pendingReasoning.toString().isBlank()) {
+                out.println(AnsiStyle.heading("🧠 任务思考 [" + taskId + "]"));
+                TerminalMarkdownRenderer r = new TerminalMarkdownRenderer(out);
+                r.append(pendingReasoning.toString());
+                r.finish();
+                out.println();
+                pendingReasoning.setLength(0);
+                reasoningStarted = true;
             }
-            contentRenderer = new TerminalMarkdownRenderer(System.out);
+
+            out.println(AnsiStyle.section("🤖 任务输出 [" + taskId + "]"));
+            contentRenderer = new TerminalMarkdownRenderer(out);
             contentStarted = true;
             streamedOutput = true;
             streamState.markStreamed();
         }
         contentRenderer.append(delta);
-        System.out.flush();
+        out.flush();
     }
 
     // 在两次 iteration 之间调用
@@ -74,10 +100,12 @@ public class TaskStreamRender implements StreamListener {
             contentRenderer = null;
         }
 
+        flushLateReasoning();
+        pendingReasoning.setLength(0);
         reasoningStarted = false;
         contentStarted = false;
         if (streamedOutput) {
-            System.out.println();
+            out.println();
         }
     }
 
@@ -89,8 +117,24 @@ public class TaskStreamRender implements StreamListener {
             if (contentRenderer != null) {
                 contentRenderer.finish();
             }
-            System.out.println("\n");
+
+            flushLateReasoning();
+            out.println("\n");
         }
+    }
+
+    private void flushLateReasoning() {
+        String late = lateReasoning.toString().trim();
+        if (late.isEmpty()) {
+            lateReasoning.setLength(0);
+            return;
+        }
+        out.println();
+        out.println(AnsiStyle.heading("🧠 补充思考 [" + taskId + "]"));
+        TerminalMarkdownRenderer renderer = new TerminalMarkdownRenderer(out);
+        renderer.append(late);
+        renderer.finish();
+        lateReasoning.setLength(0);
     }
 
     public synchronized boolean hasStreamedOutput() {
