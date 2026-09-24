@@ -9,7 +9,6 @@ import java.util.Set;
  * @Date 2026/9/22 23:13
  * @Description 危险操作识别政策, 基于静态识别
  */
-@Getter
 public class ApprovalPolicy {
 
     // 需要人工确认的工具集合
@@ -47,5 +46,9 @@ public class ApprovalPolicy {
             case "create_project" -> "将在磁盘上创建新目录和文件";
             default -> "安全的只读操作";
         };
+    }
+
+    public static Set<String> getDangerousTools() {
+        return DANGEROUS_TOOLS;
     }
 }

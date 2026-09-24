@@ -1,5 +1,7 @@
 package com.paicode.tool.service.tools;
 
+import com.paicode.policy.exception.PolicyException;
+import com.paicode.policy.service.guard.CommandGuard;
 import com.paicode.tool.entity.Param;
 import com.paicode.tool.entity.ToolDefinition;
 import com.paicode.tool.entity.ToolSchema;
@@ -38,8 +40,9 @@ public class ShellTools {
         if (normalized.isEmpty()) {
             return "执行命令失败: 命令不能为空";
         }
-        if (isDisallowedBroadScan(normalized)) {
-            return "拒绝执行命令: 不允许扫描 /、~ 或整个文件系统。请改用项目内相对路径，或优先使用 read_file、list_dir、search_code";
+        String denyReason = CommandGuard.check(normalized);
+        if (denyReason != null) {
+            throw new PolicyException(denyReason);
         }
 
         ExecutorService outputReaderExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -77,13 +80,6 @@ public class ShellTools {
         } finally {
             outputReaderExecutor.shutdownNow();
         }
-    }
-
-    private static boolean isDisallowedBroadScan(String command) {
-        String normalized = command.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT);
-        return normalized.contains("find /")
-                || normalized.contains("find ~")
-                || normalized.contains("find $home");
     }
 
     private static String readProcessOutput(Process process) throws Exception {

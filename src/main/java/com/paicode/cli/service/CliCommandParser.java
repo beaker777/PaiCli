@@ -107,6 +107,18 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.CONTEXT_STATUS, null);
         }
 
+        if (trimmed.equalsIgnoreCase("/policy")) {
+            return new ParsedCommand(CommandType.POLICY_STATUS, null);
+        }
+
+        if (trimmed.equalsIgnoreCase("/audit")) {
+            return new ParsedCommand(CommandType.AUDIT_TAIL, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/audit ", 0, 7)) {
+            return new ParsedCommand(CommandType.AUDIT_TAIL, trimmed.substring(7).trim());
+        }
+
         if (trimmed.startsWith("/")) {
             return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);
         }

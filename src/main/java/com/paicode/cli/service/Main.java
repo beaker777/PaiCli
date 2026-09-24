@@ -12,12 +12,14 @@ import com.paicode.cli.entity.ParsedCommand;
 import com.paicode.cli.constant.CommandType;
 import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
 import com.paicode.config.PaiCodeConfig;
+import com.paicode.hitl.entity.ApprovalPolicy;
 import com.paicode.hitl.service.HitlToolRegistry;
 import com.paicode.hitl.service.TerminalHitlHandler;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.factory.LlmClientFactory;
 import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.PlanReviewHandler;
+import com.paicode.policy.entity.AuditEntry;
 import com.paicode.rag.service.manage.CodeIndex;
 import com.paicode.rag.service.retrieve.CodeRetriever;
 import com.paicode.rag.entity.CodeRelation;
@@ -44,7 +46,9 @@ import java.util.List;
  * @Date 2026/9/9 19:56
  * @Description PaiCode v9.0 - Web Aware Tool CLI
  * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model
- * v9 新增 web search, web fetch
+ * v9 新增:
+ *  1. web search, web fetch
+ *  2. HITL 增强: 路径围栏, 命令快速拒绝, 操作审计日志
  */
 public class Main {
 
@@ -138,7 +142,7 @@ public class Main {
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         System.out.println("未知命令: " + command.payload());
-                        System.out.println("可用命令: /model, /plan, /team, /hitl, /clear, /memory, /memory clear, /save, /index, /search, /graph, /context, /exit\n");
+                        System.out.println("可用命令: /model, /plan, /team, /hitl, /policy, /audit, /clear, /memory, /memory clear, /save, /index, /search, /graph, /context, /exit\n");
                         continue;
                     }
                     case EXIT -> {
@@ -240,6 +244,16 @@ public class Main {
                             System.out.println("   /hitl on  - 启用人工审批");
                             System.out.println("   /hitl off - 关闭人工审批\n");
                         }
+
+                        continue;
+                    }
+                    case POLICY_STATUS -> {
+                        printPolicyStatus(reactAgent);
+
+                        continue;
+                    }
+                    case AUDIT_TAIL -> {
+                        printAuditTail(reactAgent, command.payload());
 
                         continue;
                     }
@@ -669,22 +683,6 @@ public class Main {
         };
     }
 
-    private static void printBanner() {
-        System.out.println("╔══════════════════════════════════════════════════════════╗");
-        System.out.println("║                                                          ║");
-        System.out.println("║   ██████╗  █████╗ ██╗ ██████╗██╗     ██╗                ║");
-        System.out.println("║   ██╔══██╗██╔══██╗██║██╔════╝██║     ██║                ║");
-        System.out.println("║   ██████╔╝███████║██║██║     ██║     ██║                ║");
-        System.out.println("║   ██╔═══╝ ██╔══██║██║██║     ██║     ██║                ║");
-        System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                ║");
-        System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                ║");
-        System.out.println("║                                                          ║");
-        System.out.printf("║      Web-aware Tool CLI %-33s║%n", "v" + VERSION);
-        System.out.println("║                                                          ║");
-        System.out.println("╚══════════════════════════════════════════════════════════╝");
-        System.out.println();
-    }
-
     /**
      * 加载配置
      */
@@ -777,6 +775,34 @@ public class Main {
         return value;
     }
 
+    /**
+     * 从 .env 文件加载 API Key
+     */
+    private static String loadApiKey() {
+        return loadConfigValue("DEEPSEEK_API_KEY", null);
+    }
+
+    private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent) {
+        System.out.println("使用 Multi-Agent 协作模式");
+        return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager());
+    }
+
+    private static void printBanner() {
+        System.out.println("╔══════════════════════════════════════════════════════════╗");
+        System.out.println("║                                                          ║");
+        System.out.println("║   ██████╗  █████╗ ██╗ ██████╗██╗     ██╗                 ║");
+        System.out.println("║   ██╔══██╗██╔══██╗██║██╔════╝██║     ██║                 ║");
+        System.out.println("║   ██████╔╝███████║██║██║     ██║     ██║                 ║");
+        System.out.println("║   ██╔═══╝ ██╔══██║██║██║     ██║     ██║                 ║");
+        System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
+        System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
+        System.out.println("║                                                          ║");
+        System.out.printf("║      Web-aware Tool CLI %-33s║%n", "v" + VERSION);
+        System.out.println("║                                                          ║");
+        System.out.println("╚══════════════════════════════════════════════════════════╝");
+        System.out.println();
+    }
+
     private static void printStartupHints() {
         System.out.println("提示:");
         for (String hint : startupHints()) {
@@ -796,6 +822,8 @@ public class Main {
                 "计划生成后可直接执行、补充要求重规划，或取消",
                 "输入 '/hitl on' 启用危险操作人工审批（HITL）",
                 "输入 '/hitl off' 关闭 HITL 审批",
+                "输入 '/policy' 查看安全策略状态（路径围栏 / 命令黑名单 / 资源上限）",
+                "输入 '/audit [N]' 查看最近 N 条危险工具审计记录（默认 10）",
                 "输入 '/index [路径]' 为代码库建立向量索引",
                 "输入 '/search <查询>' 语义检索代码",
                 "输入 '/graph <类名>' 查看代码关系图谱",
@@ -809,15 +837,49 @@ public class Main {
         );
     }
 
-    /**
-     * 从 .env 文件加载 API Key
-     */
-    private static String loadApiKey() {
-       return loadConfigValue("DEEPSEEK_API_KEY", null);
+    private static void printPolicyStatus(Agent reactAgent) {
+        System.out.println("🛡️ 安全策略状态：");
+        System.out.println("   项目根: " + reactAgent.getToolRegistry().getProjectPath());
+        System.out.println("   危险工具: " + String.join(", ", ApprovalPolicy.getDangerousTools()));
+        System.out.println("   路径围栏: 强制限定在项目根之内（read_file / write_file / list_dir / create_project）");
+        System.out.println("   命令黑名单: sudo / rm -rf 全盘 / mkfs / dd of=/dev / fork bomb / curl|sh / find / / chmod 777 / / shutdown");
+        System.out.println("   写入文件上限: 5MB");
+        System.out.println("   命令执行上限: 60 秒，输出 8KB（截断）");
+        System.out.println("   审计目录: " + reactAgent.getToolRegistry().getAuditLog().getAuditDir());
+        System.out.println();
     }
 
-    private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent) {
-        System.out.println("使用 Multi-Agent 协作模式");
-        return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager());
+    private static void printAuditTail(Agent reactAgent, String payload) {
+        int requested = parseAuditCount(payload, 10);
+        List<AuditEntry> entries = reactAgent.getToolRegistry().getAuditLog().readRecent(requested);
+        if (entries.isEmpty()) {
+            System.out.println("📭 今日尚无审计记录\n");
+            return;
+        }
+
+        System.out.println("📋 最近 " + entries.size() + " 条危险工具审计：");
+        for (AuditEntry entry : entries) {
+            System.out.printf("   [%s] %s %s (%dms, approver=%s)%n",
+                    entry.outcome().toUpperCase(),
+                    entry.timestamp(),
+                    entry.tool(),
+                    entry.durationMs(),
+                    entry.approver());
+            if (entry.reason() != null && !entry.reason().isBlank()) {
+                System.out.println("        原因: " + entry.reason());
+            }
+        }
+
+        System.out.println();
+    }
+
+    private static int parseAuditCount(String payload, int defaultN) {
+        if (payload == null || payload.isBlank()) return defaultN;
+        try {
+            int n = Integer.parseInt(payload.trim());
+            return Math.max(1, Math.min(n, 100));
+        } catch (NumberFormatException e) {
+            return defaultN;
+        }
     }
 }

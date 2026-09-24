@@ -3,6 +3,10 @@ package com.paicode.tool.service.register;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.entity.Tool;
+import com.paicode.policy.entity.AuditEntry;
+import com.paicode.policy.exception.PolicyException;
+import com.paicode.policy.service.audit.AuditLog;
+import com.paicode.policy.service.guard.PathGuard;
 import com.paicode.tool.entity.ToolDefinition;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
@@ -24,7 +28,14 @@ public class ToolRegistry {
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private String projectPath = System.getProperty("user.dir");
 
+    // 需要审计的工具 (与 ApprovalPolicy 的 DANGEROUS_TOOLS 保持一致)
+    private static final Set<String> AUDIT_TOOLS = Set.of("write_file", "execute_command", "create_project");
+    private PathGuard pathGuard = new PathGuard(projectPath);
+    private final AuditLog auditLog = new AuditLog();
+
     private final WebSearchTools webSearchTools = new WebSearchTools();
+    private final FileTools fileTools = new FileTools(() -> pathGuard);
+    private final CodeTools codeTools = new CodeTools(() -> pathGuard);
 
     private final long commandTimeoutSeconds;
     private final long toolBatchTimeoutSeconds;
@@ -46,9 +57,9 @@ public class ToolRegistry {
         this.commandTimeoutSeconds = commandTimeoutSeconds;
         this.toolBatchTimeoutSeconds = toolBatchTimeoutSeconds;
 
-        register(FileTools.create());
+        register(fileTools.create());
         register(ShellTools.create(projectPath, this.commandTimeoutSeconds));
-        register(CodeTools.create());
+        register(codeTools.create());
         register(RagTools.create(projectPath));
         register(webSearchTools.create());
     }
@@ -76,6 +87,9 @@ public class ToolRegistry {
             return "未知工具: " + name;
         }
 
+        boolean shouldAudit = AUDIT_TOOLS.contains(name);
+        long start = System.nanoTime();
+
         try {
             JsonNode args = mapper.readTree(argumentJson);
             Map<String, String> argMap = new HashMap<>();
@@ -83,9 +97,23 @@ public class ToolRegistry {
                     entry -> argMap.put(entry.getKey(), entry.getValue().asText())
             );
 
-            return toolDefinition.executor().execute(argMap);
+            String result = toolDefinition.executor().execute(argMap);
+            if (shouldAudit) {
+                auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start)));
+            }
+            return result;
+        } catch (PolicyException e) {
+            if (shouldAudit) {
+                auditLog.record(AuditEntry.denyByPolicy(name, argumentJson, e.getMessage(), elapsedMillis(start)));
+            }
+
+            return "🛡️ 策略拒绝: " + e.getMessage();
         } catch (Exception e) {
-            return "执行工具失败: " + e.getMessage();
+            if (shouldAudit) {
+                auditLog.record(AuditEntry.error(name, argumentJson, e.getMessage(), elapsedMillis(start)));
+            }
+
+            return "工具执行失败: " + e.getMessage();
         }
     }
 
@@ -163,5 +191,6 @@ public class ToolRegistry {
 
     public void setProjectPath(String projectPath) {
         this.projectPath = projectPath;
+        this.pathGuard = new PathGuard(projectPath);
     }
 }

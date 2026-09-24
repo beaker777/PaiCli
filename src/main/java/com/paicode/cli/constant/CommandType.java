@@ -50,5 +50,11 @@ public enum CommandType {
     GRAPH_QUERY,
 
     // 上下文状态
-    CONTEXT_STATUS
+    CONTEXT_STATUS,
+
+    // 策略状态
+    POLICY_STATUS,
+
+    // 审计
+    AUDIT_TAIL,
 }
