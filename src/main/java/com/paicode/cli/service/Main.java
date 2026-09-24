@@ -42,12 +42,13 @@ import java.util.List;
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
- * @Description PaiCode v7.0 - Parallel Tool CLI
- * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL 审批, 并行工具调用
+ * @Description PaiCode v9.0 - Web Aware Tool CLI
+ * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model
+ * v9 新增 web search, web fetch
  */
 public class Main {
 
-    private static final String VERSION = "7.0.0";
+    private static final String VERSION = "9.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -678,7 +679,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      Parallel Tool CLI %-34s║%n", "v" + VERSION);
+        System.out.printf("║      Web-aware Tool CLI %-33s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();

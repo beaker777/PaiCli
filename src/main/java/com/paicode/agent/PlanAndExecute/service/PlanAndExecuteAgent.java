@@ -69,14 +69,19 @@ public class PlanAndExecuteAgent {
             4. execute_command - 执行命令，参数：{"command": "命令"}
             5. create_project - 创建项目，参数：{"name": "名称", "type": "java|python|node"}
             6. search_code - 语义检索代码库, 参数: {"query": "自然语言描述", "top_k": 5}
+            7. web_search - 搜索互联网获取实时信息（最新版本、官方文档、技术资讯等），参数：{"query": "搜索关键词", "top_k": 5}
+            8. web_fetch - 抓取已知 URL 并返回正文 Markdown，参数：{"url": "https://...", "max_chars": 8000}
 
-            如果任务涉及到理解代码 (如分析项目结构, 查找实现位置), 请优先使用 search_code 工具.
-            如果是ANALYSIS或VERIFICATION类型任务，请直接输出分析结果，不需要调用工具。
-            对于当前项目内的文件和代码, 请优先使用 read_file, list_dir, search_code.
-            execute_command 只适合在当前项目目录执行短时间的命令, (如 git status, mvn test), 不要用它扫描整个文件系统.
+            如果任务涉及理解代码库（如分析代码结构、查找实现位置），请优先使用 search_code 工具。
+            如果任务需要实时互联网信息（如查询框架最新版本、官方文档），请使用 web_search 找入口，
+            拿到具体 URL 后用 web_fetch 抓取全文。已经有 URL 时直接 web_fetch，不要再 web_search 一次。
+            web_fetch 拿到空正文（SPA / 防爬墙）时，明确告知用户这是已知边界，不要反复重试。
+            对于当前项目内的文件，请优先使用 read_file 或 list_dir，不要用 execute_command 扫描 /、~ 或整个文件系统。
+            execute_command 只适合在当前项目目录执行短时命令。
             同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
             如果需要同时检查多个已知且互不依赖的文件或目录（例如同时读取 pom.xml、README.md、ROADMAP.md，
             或同时列出 src/main/java、src/test/java、src/main/resources），请在同一轮返回多个 read_file/list_dir 工具调用。
+            如果是ANALYSIS或VERIFICATION类型任务，请直接输出分析结果，不需要调用工具。
 
             请用中文回复。
             """;
@@ -540,6 +545,8 @@ public class PlanAndExecuteAgent {
             case "execute_command" -> "⚡ 执行 " + count + " 条命令";
             case "create_project" -> "🏗️ 创建 " + count + " 个项目";
             case "search_code" -> "🔍 搜索代码 " + count + " 次";
+            case "web_search" -> "🌐 联网搜索 " + count + " 次";
+            case "web_fetch" -> "📰 抓取 " + count + " 个网页";
             default -> "🔧 " + toolName + " × " + count;
         };
     }
@@ -551,7 +558,8 @@ public class PlanAndExecuteAgent {
                 case "read_file", "write_file", "list_dir" -> "path";
                 case "execute_command" -> "command";
                 case "create_project" -> "name";
-                case "search_code" -> "query";
+                case "search_code", "web_search" -> "query";
+                case "web_fetch" -> "url";
                 default -> null;
             };
             if (key == null) {

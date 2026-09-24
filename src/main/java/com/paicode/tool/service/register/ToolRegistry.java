@@ -6,10 +6,7 @@ import com.paicode.llm.entity.Tool;
 import com.paicode.tool.entity.ToolDefinition;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
-import com.paicode.tool.service.tools.CodeTools;
-import com.paicode.tool.service.tools.FileTools;
-import com.paicode.tool.service.tools.RagTools;
-import com.paicode.tool.service.tools.ShellTools;
+import com.paicode.tool.service.tools.*;
 import lombok.Getter;
 
 import java.util.*;
@@ -27,7 +24,7 @@ public class ToolRegistry {
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private String projectPath = System.getProperty("user.dir");
 
-    private final WebSearchToolsRegistry webSearchToolsRegistry = new WebSearchToolsRegistry();
+    private final WebSearchTools webSearchTools = new WebSearchTools();
 
     private final long commandTimeoutSeconds;
     private final long toolBatchTimeoutSeconds;
@@ -53,7 +50,7 @@ public class ToolRegistry {
         register(ShellTools.create(projectPath, this.commandTimeoutSeconds));
         register(CodeTools.create());
         register(RagTools.create(projectPath));
-        register(webSearchToolsRegistry.create());
+        register(webSearchTools.create());
     }
 
     private void register(List<ToolDefinition> toolDefinitions) {

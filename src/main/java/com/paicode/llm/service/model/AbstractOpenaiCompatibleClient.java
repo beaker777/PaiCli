@@ -23,11 +23,28 @@ public abstract class AbstractOpenaiCompatibleClient implements LlmClient {
 
     private static final ObjectMapper mapper = new ObjectMapper();
 
+    // readTimeout 是流式输出时两次 read 间隔的最大时长, 使用 callTimeOut 做兜底
+    // 支持在配置文件中覆盖
     private static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(readTimeoutSeconds("paicode.llm.connect.timeout.seconds", 60), TimeUnit.SECONDS)
+            .readTimeout(readTimeoutSeconds("paicode.llm.read.timeout.seconds", 300), TimeUnit.SECONDS)
+            .writeTimeout(readTimeoutSeconds("paicode.llm.write.timeout.seconds", 60), TimeUnit.SECONDS)
+            .callTimeout(readTimeoutSeconds("paicode.llm.call.timeout.seconds", 600), TimeUnit.SECONDS)
             .build();
+
+    private static long readTimeoutSeconds(String key, long defaultValue) {
+        String raw = System.getProperty(key);
+        if (raw == null || raw.isBlank()) {
+            return defaultValue;
+        }
+
+        try {
+            long parsed = Long.parseLong(raw.trim());
+            return parsed > 0 ? parsed : defaultValue;
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
 
     public abstract String getApiUrl();
 
