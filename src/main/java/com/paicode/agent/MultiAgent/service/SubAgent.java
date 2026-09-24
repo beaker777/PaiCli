@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.agent.MultiAgent.entity.AgentMessage;
 import com.paicode.agent.MultiAgent.constant.AgentRole;
+import com.paicode.agent.constant.ExitReason;
+import com.paicode.agent.service.AgentBudget;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
@@ -34,7 +36,6 @@ public class SubAgent {
 
     private static final Logger log = LoggerFactory.getLogger(SubAgent.class);
     private static final ObjectMapper mapper = new ObjectMapper();
-    private static final int MAX_ITERATIONS = 10;
 
     private final String name;
     private final AgentRole role;
@@ -160,14 +161,23 @@ public class SubAgent {
 
         SubAgentStreamRenderer streamRenderer = new SubAgentStreamRenderer(name , role, out);
 
-        long startNano = System.nanoTime();
-        int totalInputTokens = 0;
-        int totalOutputTokens = 0;
+        long startNanos = System.nanoTime();
+        AgentBudget budget = AgentBudget.fromSystemProperties();
 
-        int iteration = 0;
-        while (iteration < MAX_ITERATIONS) {
-            iteration ++;
+        while (true) {
+            ExitReason exitReason = budget.check();
+            if (exitReason != ExitReason.WITHIN_BUDGET) {
+                streamRenderer.finish();
+                out.println(formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos));
+                String description = budget.describeExit(exitReason);
 
+                log.warn("[{}] run exhausted budget: reason={}, iteration={}, tokens={}/{}",
+                        name, exitReason, budget.iteration(),
+                        budget.totalInputTokens() + budget.totalOutputTokens(), budget.tokenBudget());
+                return AgentMessage.error(name, role, description);
+            }
+
+            budget.beginIteration();
             try {
                 ChatResponse response = llmClient.chat(
                         conversationHistory,
@@ -175,8 +185,7 @@ public class SubAgent {
                         streamRenderer
                 );
 
-                totalInputTokens += response.inputTokens();
-                totalOutputTokens += response.outputTokens();
+                budget.recordTokens(response.inputTokens(), response.outputTokens());
 
                 // 执行工具调用, 将结果加入记忆
                 if (response.hasToolCalls()) {
@@ -187,6 +196,8 @@ public class SubAgent {
                     ));
 
                     printToolCalls(out ,response.toolCalls());
+
+                    budget.recordToolCalls(response.toolCalls());
 
                     streamRenderer.resetBetweenTwoIterations();
 
@@ -202,7 +213,7 @@ public class SubAgent {
                 conversationHistory.add(Message.assistant(response.reasoningContent(), response.content()));
 
                 streamRenderer.finish();
-                out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
+                out.println(formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos));
                 return AgentMessage.result(name, role, response.content());
             } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
@@ -211,10 +222,6 @@ public class SubAgent {
                 return AgentMessage.error(name, role, "LLM 调用失败: " + e.getMessage());
             }
         }
-
-        streamRenderer.finish();
-        out.println(formatTokenStats(totalInputTokens, totalOutputTokens, startNano));
-        return AgentMessage.error(name, role, "达到最大迭代次数限制, 任务未完成");
     }
 
 

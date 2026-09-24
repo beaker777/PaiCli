@@ -6,7 +6,7 @@ import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.retrieve.SearchResultFormatter;
 import com.paicode.tool.entity.Param;
 import com.paicode.tool.entity.ToolDefinition;
-import com.paicode.tool.service.register.ToolSchema;
+import com.paicode.tool.entity.ToolSchema;
 
 import java.util.List;
 

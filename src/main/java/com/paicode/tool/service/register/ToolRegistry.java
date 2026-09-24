@@ -27,6 +27,8 @@ public class ToolRegistry {
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private String projectPath = System.getProperty("user.dir");
 
+    private final WebSearchToolsRegistry webSearchToolsRegistry = new WebSearchToolsRegistry();
+
     private final long commandTimeoutSeconds;
     private final long toolBatchTimeoutSeconds;
     public static final int DEFAULT_COMMAND_TIMEOUT_SECONDS = 60;
@@ -51,6 +53,7 @@ public class ToolRegistry {
         register(ShellTools.create(projectPath, this.commandTimeoutSeconds));
         register(CodeTools.create());
         register(RagTools.create(projectPath));
+        register(webSearchToolsRegistry.create());
     }
 
     private void register(List<ToolDefinition> toolDefinitions) {

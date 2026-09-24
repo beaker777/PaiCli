@@ -2,6 +2,8 @@ package com.paicode.agent.ReAct;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paicode.agent.constant.ExitReason;
+import com.paicode.agent.service.AgentBudget;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
@@ -40,9 +42,6 @@ public class Agent {
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
     private final MemoryManager memoryManager;
-
-    // 最大迭代次数
-    private static final int MAX_ITERATIONS = 10;
 
     // 系统提示词
     private static final String SYSTEM_PROMPT = """
@@ -105,19 +104,26 @@ public class Agent {
         StringBuilder reasoningTranscript = new StringBuilder();
 
         long startNanos = System.nanoTime();
-        int totalInputTokens = 0;
-        int totalOutputTokens = 0;
+        AgentBudget budget = AgentBudget.fromSystemProperties();
 
-        int iteration = 0;
-        while (iteration < MAX_ITERATIONS) {
-            iteration ++;
+        while (true) {
+            ExitReason exitReason = budget.check();
+            if (exitReason != ExitReason.WITHIN_BUDGET) {
+                String statsLine = formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos);
+                String description = budget.describeExit(exitReason);
 
+                log.warn("ReAct run exhausted budget: reason={}, iteration={}, tokens={}/{}",
+                        exitReason, budget.iteration(),
+                        budget.totalInputTokens() + budget.totalOutputTokens(), budget.tokenBudget());
+                return "❌ " + description + "\n\n" + statsLine;
+            }
+
+            int iteration = budget.beginIteration();
             try {
-                // 调用模型
                 ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamListener);
 
-                totalInputTokens += response.inputTokens();
-                totalOutputTokens += response.outputTokens();
+                // 记录 Token 消耗
+                budget.recordTokens(response.inputTokens(), response.outputTokens());
 
                 // 重置渲染器的状态, 避免内容错位
                 streamListener.resetBetweenTwoIterations();
@@ -130,6 +136,9 @@ public class Agent {
                     // 输出 toolCall 内容
                     printToolCalls(System.out, response.toolCalls());
 
+                    // 记录 toolCall
+                    budget.recordToolCalls(response.toolCalls());
+
                     // 添加信息
                     conversationHistory.add(Message.assistant(response.reasoningContent(), response.content(), response.toolCalls()));
 
@@ -139,45 +148,42 @@ public class Agent {
                         memoryManager.addToolResult(result.name(), result.result());
                         conversationHistory.add(Message.tool(result.id(), result.result()));
                     }
-                } else {
-                    appendReasoning(reasoningTranscript, response.reasoningContent());
 
-                    // 不调用工具, 结束迭代
-                    conversationHistory.add(Message.assistant(response.reasoningContent(), response.content()));
-
-                    // 存入记忆
-                    memoryManager.addAssistantMessage(response.content());
-
-                    // 记录 token 使用情况
-                    memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens);
-                    log.info("ReAct run finished: inputTokens={}, outputTokens={}, reasoningChars={}, answerChars={}",
-                            totalInputTokens,
-                            totalOutputTokens,
-                            response.reasoningContent() == null ? 0 : response.reasoningContent().length(),
-                            response.content() == null ? 0 : response.content().length());
-                    if (log.isDebugEnabled()) {
-                        log.debug("Assistant answer preview: {}", preview(response.content(), 500));
-                    }
-
-                    String statsLine = formatTokenStats(totalInputTokens, totalOutputTokens, startNanos);
-                    if (streamListener.hasStreamedOutput()) {
-                        streamListener.finish();
-                        System.out.println(statsLine);
-                        return "";
-                    }
-
-                    return formatUserFacingResponse(reasoningTranscript.toString(), response.content())
-                            + "\n\n" + statsLine;
+                    continue;
                 }
+
+                // 不调用工具, 结束迭代
+                appendReasoning(reasoningTranscript, response.reasoningContent());
+                conversationHistory.add(Message.assistant(response.reasoningContent(), response.content()));
+
+                // 存入记忆
+                memoryManager.addAssistantMessage(response.content());
+
+                // 记录 token 使用情况
+                memoryManager.recordTokenUsage(budget.totalInputTokens(), budget.totalOutputTokens());
+                log.info("ReAct run finished: inputTokens={}, outputTokens={}, reasoningChars={}, answerChars={}",
+                        budget.totalInputTokens(),
+                        budget.totalOutputTokens(),
+                        response.reasoningContent() == null ? 0 : response.reasoningContent().length(),
+                        response.content() == null ? 0 : response.content().length());
+                if (log.isDebugEnabled()) {
+                    log.debug("Assistant answer preview: {}", preview(response.content(), 500));
+                }
+
+                String statsLine = formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos);
+                if (streamListener.hasStreamedOutput()) {
+                    streamListener.finish();
+                    System.out.println(statsLine);
+                    return "";
+                }
+
+                return formatUserFacingResponse(reasoningTranscript.toString(), response.content())
+                        + "\n\n" + statsLine;
             } catch (Exception e) {
                 log.error("LLM call failed in ReAct loop", e);
                 return "模型调用失败: " + e.getMessage();
             }
         }
-
-        String stasLine = formatTokenStats(totalInputTokens, totalOutputTokens, startNanos);
-        log.warn("ReAct run reached max iterations: {}", MAX_ITERATIONS);
-        return "超过最大迭代次数\n\n" + stasLine;
     }
 
     private List<ToolExecutionResult> executeToolCalls(List<ToolCall> toolCalls, int iteration) {

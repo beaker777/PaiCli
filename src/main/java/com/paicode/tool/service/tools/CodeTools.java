@@ -2,7 +2,7 @@ package com.paicode.tool.service.tools;
 
 import com.paicode.tool.entity.Param;
 import com.paicode.tool.entity.ToolDefinition;
-import com.paicode.tool.service.register.ToolSchema;
+import com.paicode.tool.entity.ToolSchema;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
