@@ -57,4 +57,19 @@ public enum CommandType {
 
     // 审计
     AUDIT_TAIL,
+
+    // mcp 列表
+    MCP_LIST,
+
+    // mcp 重启
+    MCP_RESTART,
+
+    // mcp 日志
+    MCP_LOGS,
+
+    // mcp 禁用
+    MCP_DISABLE,
+
+    // mcp 启用
+    MCP_ENABLE,
 }

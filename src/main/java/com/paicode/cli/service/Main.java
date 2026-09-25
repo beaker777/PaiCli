@@ -17,6 +17,7 @@ import com.paicode.hitl.service.HitlToolRegistry;
 import com.paicode.hitl.service.TerminalHitlHandler;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.factory.LlmClientFactory;
+import com.paicode.mcp.service.manage.McpServerManager;
 import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.PlanReviewHandler;
 import com.paicode.policy.entity.AuditEntry;
@@ -44,15 +45,14 @@ import java.util.List;
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
- * @Description PaiCode v9.0 - Web Aware Tool CLI
- * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model
- * v9 新增:
- *  1. web search, web fetch
- *  2. HITL 增强: 路径围栏, 命令快速拒绝, 操作审计日志
+ * @Description PaiCode v10.0 - MCP Enabled Agent CLI
+ * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model, MCP
+ *  v10 新增:
+ *  1. stdio / streamable http mcp server
  */
 public class Main {
 
-    private static final String VERSION = "9.0.0";
+    private static final String VERSION = "10.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -96,6 +96,20 @@ public class Main {
             // 创建 HITL 处理器 (默认关闭)
             TerminalHitlHandler hitlHandler = new TerminalHitlHandler(false);
             HitlToolRegistry hitlToolRegistry = new HitlToolRegistry(hitlHandler);
+
+            // 创建 MCP 管理器
+            McpServerManager mcpServerManager = new McpServerManager(hitlToolRegistry, Path.of("."));
+            try {
+                mcpServerManager.loadConfiguredServers();
+                mcpServerManager.startAll();
+
+                Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "paicode-mcp-shutdown"));
+                System.out.println(mcpServerManager.startupSummary());
+                System.out.println();
+            } catch (Exception e) {
+                System.out.println("⚠️ MCP 初始化失败: " + e.getMessage());
+                System.out.println("   可检查 ~/.paicode/mcp.json 或 .paicode/mcp.json\n");
+            }
 
             // 默认使用 ReAct 模式
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
@@ -142,7 +156,7 @@ public class Main {
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         System.out.println("未知命令: " + command.payload());
-                        System.out.println("可用命令: /model, /plan, /team, /hitl, /policy, /audit, /clear, /memory, /memory clear, /save, /index, /search, /graph, /context, /exit\n");
+                        System.out.println("可用命令: /model, /plan, /team, /hitl, /mcp, /policy, /audit, /clear, /memory, /memory clear, /save, /index, /search, /graph, /context, /exit\n");
                         continue;
                     }
                     case EXIT -> {
@@ -255,6 +269,28 @@ public class Main {
                     case AUDIT_TAIL -> {
                         printAuditTail(reactAgent, command.payload());
 
+                        continue;
+                    }
+                    case MCP_LIST -> {
+                        System.out.println(mcpServerManager.formatStatus());
+                        System.out.println();
+
+                        continue;
+                    }
+                    case MCP_RESTART -> {
+                        printMcpCommandResult(mcpServerManager.restart(command.payload()));
+                        continue;
+                    }
+                    case MCP_LOGS -> {
+                        printMcpCommandResult(mcpServerManager.logs(command.payload()));
+                        continue;
+                    }
+                    case MCP_DISABLE -> {
+                        printMcpCommandResult(mcpServerManager.disable(command.payload()));
+                        continue;
+                    }
+                    case MCP_ENABLE -> {
+                        printMcpCommandResult(mcpServerManager.enable(command.payload()));
                         continue;
                     }
                     case INDEX_CODE -> {
@@ -797,7 +833,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      Web-aware Tool CLI %-33s║%n", "v" + VERSION);
+        System.out.printf("║      MCP-Enabled Agent CLI %-28s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -822,6 +858,7 @@ public class Main {
                 "计划生成后可直接执行、补充要求重规划，或取消",
                 "输入 '/hitl on' 启用危险操作人工审批（HITL）",
                 "输入 '/hitl off' 关闭 HITL 审批",
+                "输入 '/mcp' 查看 MCP server，'/mcp restart|logs|disable|enable <name>' 管理 MCP",
                 "输入 '/policy' 查看安全策略状态（路径围栏 / 命令黑名单 / 资源上限）",
                 "输入 '/audit [N]' 查看最近 N 条危险工具审计记录（默认 10）",
                 "输入 '/index [路径]' 为代码库建立向量索引",
@@ -881,5 +918,10 @@ public class Main {
         } catch (NumberFormatException e) {
             return defaultN;
         }
+    }
+
+    private static void printMcpCommandResult(String result) {
+        System.out.println(result);
+        System.out.println();
     }
 }

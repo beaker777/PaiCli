@@ -3,18 +3,18 @@ package com.paicode.tool.service.register;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.entity.Tool;
+import com.paicode.mcp.entity.McpToolDescription;
+import com.paicode.tool.entity.*;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.policy.exception.PolicyException;
 import com.paicode.policy.service.audit.AuditLog;
 import com.paicode.policy.service.guard.PathGuard;
-import com.paicode.tool.entity.ToolDefinition;
-import com.paicode.tool.entity.ToolExecutionResult;
-import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.tools.*;
 import lombok.Getter;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Function;
 
 /**
  * @Author beaker
@@ -25,11 +25,12 @@ import java.util.concurrent.*;
 public class ToolRegistry {
 
     private static final ObjectMapper mapper = new ObjectMapper();
-    private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
     private String projectPath = System.getProperty("user.dir");
 
     // 需要审计的工具 (与 ApprovalPolicy 的 DANGEROUS_TOOLS 保持一致)
     private static final Set<String> AUDIT_TOOLS = Set.of("write_file", "execute_command", "create_project");
+    private final Map<String, ToolDefinition> tools = new ConcurrentHashMap<>();
+    private final Map<String, McpRegisteredTool> mcpTools = new ConcurrentHashMap<>();
     private PathGuard pathGuard = new PathGuard(projectPath);
     private final AuditLog auditLog = new AuditLog();
 
@@ -64,11 +65,11 @@ public class ToolRegistry {
         register(webSearchTools.create());
     }
 
-    private void register(List<ToolDefinition> toolDefinitions) {
-        for (ToolDefinition toolDefinition : toolDefinitions) {
+    private void register(List<ToolDefinition> toolList) {
+        for (ToolDefinition tool : toolList) {
             tools.put(
-                    toolDefinition.name(),
-                    toolDefinition
+                    tool.name(),
+                    tool
             );
         }
     }
@@ -82,22 +83,32 @@ public class ToolRegistry {
 
     // 执行工具调用
     public String executeTool(String name, String argumentJson) {
-        ToolDefinition toolDefinition = tools.get(name);
-        if (toolDefinition == null) {
+        ToolDefinition tool = tools.get(name);
+        if (tool == null) {
             return "未知工具: " + name;
         }
 
-        boolean shouldAudit = AUDIT_TOOLS.contains(name);
+        boolean shouldAudit = shouldAudit(name);
         long start = System.nanoTime();
 
         try {
+            McpRegisteredTool mcpTool = mcpTools.get(name);
+            if (mcpTool != null) {
+                String result = mcpTool.invoker().apply(argumentJson);
+                if (shouldAudit) {
+                    auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start)));
+                }
+
+                return result;
+            }
+
             JsonNode args = mapper.readTree(argumentJson);
             Map<String, String> argMap = new HashMap<>();
             args.fields().forEachRemaining(
                     entry -> argMap.put(entry.getKey(), entry.getValue().asText())
             );
 
-            String result = toolDefinition.executor().execute(argMap);
+            String result = tool.executor().execute(argMap);
             if (shouldAudit) {
                 auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start)));
             }
@@ -185,6 +196,40 @@ public class ToolRegistry {
         }
     }
 
+    public void registerMcpTool(McpToolDescription description, Function<String, String> invoker) {
+        Objects.requireNonNull(description, "description");
+        Objects.requireNonNull(invoker, "invoker");
+
+        String toolName = description.namespacedName();
+        McpRegisteredTool registeredTool = new McpRegisteredTool(description, invoker);
+
+        mcpTools.put(toolName, registeredTool);
+        tools.put(toolName, new ToolDefinition(
+                toolName,
+                mcpDescription(description),
+                description.inputSchema(),
+                args -> "MCP 工具不应通过 Map<String, String> 入口进入"
+        ));
+    }
+
+    public void unregisterMcpTool(String toolName) {
+        if (toolName == null || toolName.isBlank()) {
+            return;
+        }
+
+        mcpTools.remove(toolName);
+        tools.remove(toolName);
+    }
+
+    private static String mcpDescription(McpToolDescription description) {
+        String base = description.description() == null || description.description().isBlank()
+                ? "MCP server 提供的外部工具"
+                : description.description();
+
+        return base + " (MCP server: " + description.serverName() + ", tool: " + description.name() + ")";
+    }
+
+
     private long elapsedMillis(long startedAtNanos) {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
     }
@@ -192,5 +237,9 @@ public class ToolRegistry {
     public void setProjectPath(String projectPath) {
         this.projectPath = projectPath;
         this.pathGuard = new PathGuard(projectPath);
+    }
+
+    private static boolean shouldAudit(String name) {
+        return AUDIT_TOOLS.contains(name) || (name != null && name.startsWith("mcp__"));
     }
 }

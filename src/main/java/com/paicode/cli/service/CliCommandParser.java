@@ -119,6 +119,26 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.AUDIT_TAIL, trimmed.substring(7).trim());
         }
 
+        if (trimmed.equalsIgnoreCase("/mcp")) {
+            return new ParsedCommand(CommandType.MCP_LIST, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mcp restart ", 0, 13)) {
+            return new ParsedCommand(CommandType.MCP_RESTART, trimmed.substring(13).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mcp logs ", 0, 10)) {
+            return new ParsedCommand(CommandType.MCP_LOGS, trimmed.substring(10).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mcp disable ", 0, 13)) {
+            return new ParsedCommand(CommandType.MCP_DISABLE, trimmed.substring(13).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mcp enable ", 0, 12)) {
+            return new ParsedCommand(CommandType.MCP_ENABLE, trimmed.substring(12).trim());
+        }
+
         if (trimmed.startsWith("/")) {
             return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);
         }
