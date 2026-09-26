@@ -6,6 +6,7 @@ import com.paicode.agent.MultiAgent.entity.AgentMessage;
 import com.paicode.agent.MultiAgent.constant.AgentRole;
 import com.paicode.agent.constant.ExitReason;
 import com.paicode.agent.service.AgentBudget;
+import com.paicode.context.TokenUsageFormatter;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * @Author beaker
@@ -42,6 +44,7 @@ public class SubAgent {
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final List<Message> conversationHistory;
+    private Supplier<String> externalContextSupplier = () -> "";
 
     // 各角色的系统提示词
     private static final String PLANNER_PROMPT = """
@@ -92,7 +95,12 @@ public class SubAgent {
             如果任务涉及理解代码库，请优先使用 search_code 工具。
             如果任务涉及实时性或互联网信息（如"框架最新版本"、"官方文档说明"），先用 web_search 找入口，
             拿到 URL 后用 web_fetch 取全文。已经有 URL 时直接 web_fetch，不要再 web_search。
-            web_fetch 拿到空正文（SPA / 防爬墙）时，告知用户这是已知边界，不要反复重试。
+            web_fetch 拿到空正文（SPA / 防爬墙）时，自动 fallback 到浏览器 MCP，不要重复 web_fetch。
+            工具选择 - 网页内容获取：静态 / SSR 页面用 web_fetch；SPA / React / Vue / 客户端渲染、需要 JS 才有内容、防爬墙、
+            需要登录态、需要表单交互（点击/输入/提交）时用浏览器 MCP（mcp__chrome-devtools__navigate_page + take_snapshot）。
+            微信公众号文章 (mp.weixin.qq.com)、知乎专栏、推特、小红书等站点 web_fetch 通常拿不到正文，应走浏览器 MCP。
+            浏览器操作优先 mcp__chrome-devtools__take_snapshot（结构化 DOM 文本），不要默认 take_screenshot；
+            表单填写优先 fill_form，等待异步加载用 wait_for，控制台排查用 list_console_messages，网络排查用 list_network_requests + get_network_request。
             对于当前项目内的文件，请优先使用 read_file 或 list_dir，不要用 execute_command 扫描 /、~ 或整个文件系统。
             execute_command 只适合在当前项目目录执行短时命令。
             安全策略硬规则（HITL 之外的兜底，无法绕过）：read_file / write_file / list_dir / create_project 必须在项目根之内；write_file 单文件 5MB 上限；
@@ -137,18 +145,46 @@ public class SubAgent {
         this.toolRegistry = toolRegistry;
 
         this.conversationHistory = new ArrayList<>();
-        this.conversationHistory.add(Message.system(getSystemPrompt(role)));
+        this.conversationHistory.add(Message.system(getSystemPrompt()));
+    }
+
+    public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
+        this.externalContextSupplier = externalContextSupplier == null ? () -> "" : externalContextSupplier;
+        refreshSystemPrompt();
     }
 
     /**
      * 获取系统提示词
      */
-    private String getSystemPrompt(AgentRole role) {
-        return switch (role) {
+    private String getSystemPrompt() {
+        String base = switch (role) {
             case PLANNER -> PLANNER_PROMPT;
             case WORKER -> WORKER_PROMPT;
             case REVIEWER -> REVIEWER_PROMPT;
         };
+
+        String external = buildExternalContext();
+        return external.isEmpty() ? base : base + "\n" + external;
+    }
+
+    private void refreshSystemPrompt() {
+        if (!conversationHistory.isEmpty()) {
+            conversationHistory.set(0, Message.system(getSystemPrompt()));
+        }
+    }
+
+    private String buildExternalContext() {
+        if (!toolRegistry.getContextProfile().mcpResourceIndexEnabled()) {
+            return "";
+        }
+
+        try {
+            String context = externalContextSupplier.get();
+            return context == null ? "" : context.trim();
+        } catch (Exception e) {
+            log.warn("[{}] failed to build external context", name, e);
+            return "";
+        }
     }
 
     /**
@@ -164,6 +200,7 @@ public class SubAgent {
      */
     public AgentMessage execute(AgentMessage task, PrintStream out) {
         log.info("[{}] executing task from {}: type={}", name, task.fromAgent(), task.type());
+        refreshSystemPrompt();
         String taskContent = task.content();
 
         // 将 task 注入历史
@@ -172,13 +209,13 @@ public class SubAgent {
         SubAgentStreamRenderer streamRenderer = new SubAgentStreamRenderer(name , role, out);
 
         long startNanos = System.nanoTime();
-        AgentBudget budget = AgentBudget.fromSystemProperties();
+        AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
 
         while (true) {
             ExitReason exitReason = budget.check();
             if (exitReason != ExitReason.WITHIN_BUDGET) {
                 streamRenderer.finish();
-                out.println(formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos));
+                out.println(formatTokenStats(budget, startNanos));
                 String description = budget.describeExit(exitReason);
 
                 log.warn("[{}] run exhausted budget: reason={}, iteration={}, tokens={}/{}",
@@ -195,7 +232,7 @@ public class SubAgent {
                         streamRenderer
                 );
 
-                budget.recordTokens(response.inputTokens(), response.outputTokens());
+                budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
 
                 // 执行工具调用, 将结果加入记忆
                 if (response.hasToolCalls()) {
@@ -223,7 +260,7 @@ public class SubAgent {
                 conversationHistory.add(Message.assistant(response.reasoningContent(), response.content()));
 
                 streamRenderer.finish();
-                out.println(formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos));
+                out.println(formatTokenStats(budget, startNanos));
                 return AgentMessage.result(name, role, response.content());
             } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
@@ -346,11 +383,13 @@ public class SubAgent {
         }
     }
 
-    private static String formatTokenStats(int inputTokens, int outputTokens, long startNanos) {
-        double elapsedSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
-        return AnsiStyle.subtle(String.format(
-                "📊 Token: %d 输入 / %d 输出 / %d 合计 | ⏱ %.1fs",
-                inputTokens, outputTokens, inputTokens + outputTokens, elapsedSeconds));
+    private String formatTokenStats(AgentBudget budget, long startNanos) {
+        return TokenUsageFormatter.format(
+                llmClient,
+                budget.totalInputTokens(),
+                budget.totalOutputTokens(),
+                budget.totalCachedInputTokens(),
+                startNanos);
     }
 
     /**

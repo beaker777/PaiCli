@@ -1,5 +1,6 @@
 package com.paicode.memory.service.manager;
 
+import com.paicode.context.ContextProfile;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.memory.constant.MemoryType;
@@ -27,25 +28,38 @@ public class MemoryManager {
     private final LongTermMemory longTermMemory;
     private final ContextCompressor compressor;
     private final MemoryRetriever retriever;
-    private final TokenBudget tokenBudget;
+    private TokenBudget tokenBudget;
+    private ContextProfile contextProfile;
 
     // 工具调用结果在记忆中保存的最大长度
     private static final int MAX_TOOL_RESULT_CHARS = 500;
 
     public MemoryManager(LlmClient llmClient) {
-        this(llmClient, 200000, 32768);
+        this(llmClient, ContextProfile.from(llmClient), null);
     }
 
-    public MemoryManager(LlmClient llmClient, int contextWindow, int shortTermBudget) {
-        this(llmClient, null, contextWindow, shortTermBudget);
+    public MemoryManager(LlmClient llmClient, int shortTermBudget, int contextWindow, LongTermMemory longTermMemory) {
+        this(llmClient, ContextProfile.custom(contextWindow, shortTermBudget), longTermMemory);
     }
 
-    public MemoryManager(LlmClient llmClient, LongTermMemory longTermMemory, int contextWindow, int shortTermBudget) {
-        this.shortTermMemory = new ConversationMemory(shortTermBudget);
+    public MemoryManager(LlmClient llmClient, ContextProfile contextProfile, LongTermMemory longTermMemory) {
+        this.contextProfile = contextProfile;
+        this.shortTermMemory = new ConversationMemory(contextProfile.shortTermMemoryBudget());
         this.longTermMemory = longTermMemory != null ? longTermMemory : new LongTermMemory();
         this.compressor = new ContextCompressor(llmClient);
         this.retriever = new MemoryRetriever(shortTermMemory, this.longTermMemory);
-        this.tokenBudget = new TokenBudget(contextWindow);
+        this.tokenBudget = new TokenBudget(contextProfile.maxContextWindow());
+    }
+
+    public void setLlmClient(LlmClient llmClient) {
+        this.compressor.setLlmClient(llmClient);
+        applyContextProfile(ContextProfile.from(llmClient));
+    }
+
+    public void applyContextProfile(ContextProfile contextProfile) {
+        this.contextProfile = contextProfile;
+        this.tokenBudget = new TokenBudget(contextProfile.maxContextWindow());
+        this.shortTermMemory.setMaxTokens(contextProfile.shortTermMemoryBudget());
     }
 
     /**
@@ -137,21 +151,27 @@ public class MemoryManager {
         tokenBudget.recordUsage(inputTokens, outputTokens);
     }
 
+    public void recordTokenUsage(int inputTokens, int outputTokens, int cachedInputTokens) {
+        tokenBudget.recordUsage(inputTokens, outputTokens, cachedInputTokens);
+    }
+
     /**
      * 检查并触发压缩
      *
      * @return 是否进行了压缩
      */
     public boolean compressIfNeeded() {
-        if (!tokenBudget.needsCompression(shortTermMemory)) {
+        if (!tokenBudget.needsCompression(shortTermMemory, contextProfile.compressionTriggerRatio())) {
             return false;
         }
 
-        System.out.println("短期记忆接近预算上限, 开始压缩");
+        int beforeTokens = shortTermMemory.getTokenCount();
+        System.out.println("📦 上下文占用达到压缩阈值 (" + (int) (contextProfile.compressionTriggerRatio() * 100) + "%), 触发压缩...");
         String summary = compressor.compress(shortTermMemory);
         if (summary != null) {
-            System.out.println("压缩完成, 摘要: " +
-                    summary.substring(0, Math.min(100, summary.length())) + "...");
+            int afterTokens = shortTermMemory.getTokenCount();
+            System.out.println("   压缩完成: " + beforeTokens + " → " + afterTokens + " tokens, 摘要: "
+                    + summary.substring(0, Math.min(100, summary.length())) + "...");
         }
         return summary != null;
     }
@@ -174,7 +194,8 @@ public class MemoryManager {
      * 获取记忆系统的整体状态
      */
     public String getSystemStatus() {
-        return shortTermMemory.getStatusSummary() + "\n" +
+        return "上下文策略: " + contextProfile.summary() + "\n" +
+                shortTermMemory.getStatusSummary() + "\n" +
                 longTermMemory.getStatusSummary() + "\n" +
                 tokenBudget.getUsageReport();
     }

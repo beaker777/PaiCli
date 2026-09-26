@@ -1,6 +1,7 @@
 package com.paicode.hitl.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paicode.hitl.entity.ApprovalPolicy;
 import com.paicode.hitl.entity.ApprovalRequest;
 import com.paicode.hitl.entity.ApprovalResult;
 
@@ -24,7 +25,8 @@ public class TerminalHitlHandler implements HitlHandler {
     private volatile boolean enabled;
 
     // 本次会话中已经批准全部放行的工具集合
-    private final Set<String> approvedAllTools = ConcurrentHashMap.newKeySet();
+    private final Set<String> approvedAllByTool = ConcurrentHashMap.newKeySet();
+    private final Set<String> approvedAllByServer = ConcurrentHashMap.newKeySet();
 
     private final BufferedReader in;
     private final PrintStream out;
@@ -41,9 +43,14 @@ public class TerminalHitlHandler implements HitlHandler {
 
     @Override
     public ApprovalResult requestApproval(ApprovalRequest request) {
-        if (approvedAllTools.contains(request.toolName())) {
+        String mcpServer = ApprovalPolicy.mcpServerName(request.toolName());
+        if (approvedAllByTool.contains(request.toolName())) {
             out.println("  [HITL] " + request.toolName() + " 已在本次会话中全部放行，自动通过");
             return ApprovalResult.approveAll();
+        }
+        if (isApprovedAllByServer(mcpServer)) {
+            out.println("  [HITL] MCP server " + mcpServer + " 已在本次会话中全部放行，自动通过");
+            return ApprovalResult.approveAllByServer();
         }
 
         // 显著的视觉分隔符，避免审批框被误认为属于上游的"回复"区
@@ -85,9 +92,7 @@ public class TerminalHitlHandler implements HitlHandler {
             }
             switch (normalized) {
                 case "a" -> {
-                    approvedAllTools.add(request.toolName());
-                    out.println("  已批准，后续 " + request.toolName() + " 操作将自动通过");
-                    return ApprovalResult.approveAll();
+                    return promptApproveAllScope(request);
                 }
                 case "n" -> {
                     out.print("  拒绝原因（可直接回车跳过）：");
@@ -117,6 +122,38 @@ public class TerminalHitlHandler implements HitlHandler {
 
         out.println("  [HITL] 连续多次无效输入，保守处理为拒绝");
         return ApprovalResult.reject("连续多次无效输入");
+    }
+
+    private ApprovalResult promptApproveAllScope(ApprovalRequest request) {
+        String mcpServer = ApprovalPolicy.mcpServerName(request.toolName());
+        if (mcpServer == null || mcpServer.isBlank()) {
+            approvedAllByTool.add(request.toolName());
+            out.println("  已批准，后续 " + request.toolName() + " 操作将自动通过");
+            return ApprovalResult.approveAll();
+        }
+
+        out.println("  全部放行范围：");
+        out.println("  [tool / Enter] 仅本工具 " + request.toolName());
+        out.println("  [server]       整个 MCP server " + mcpServer + "（连续浏览器操作推荐）");
+        out.print("> ");
+        out.flush();
+        String scope;
+        try {
+            scope = in.readLine();
+        } catch (IOException e) {
+            out.println("  读取范围失败，默认按工具维度放行");
+            scope = "";
+        }
+
+        String normalized = scope == null ? "" : scope.trim().toLowerCase();
+        if ("server".equals(normalized) || "s".equals(normalized)) {
+            approvedAllByServer.add(mcpServer);
+            out.println("  已批准，后续 MCP server " + mcpServer + " 的工具调用将自动通过");
+            return ApprovalResult.approveAllByServer();
+        }
+        approvedAllByTool.add(request.toolName());
+        out.println("  已批准，后续 " + request.toolName() + " 操作将自动通过");
+        return ApprovalResult.approveAll();
     }
 
     /**
@@ -150,7 +187,8 @@ public class TerminalHitlHandler implements HitlHandler {
     }
 
     public void clearApprovedAll() {
-        approvedAllTools.clear();
+        approvedAllByTool.clear();
+        approvedAllByServer.clear();
     }
 
     @Override
@@ -161,5 +199,15 @@ public class TerminalHitlHandler implements HitlHandler {
     @Override
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    @Override
+    public boolean isApprovedAllByTool(String toolName) {
+        return toolName != null && approvedAllByTool.contains(toolName);
+    }
+
+    @Override
+    public boolean isApprovedAllByServer(String serverName) {
+        return serverName != null && approvedAllByServer.contains(serverName);
     }
 }

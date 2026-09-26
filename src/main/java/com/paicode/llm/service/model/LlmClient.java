@@ -22,4 +22,16 @@ public interface LlmClient {
     String getModelName();
 
     String getProviderName();
+
+    default int maxContextWindow() {
+        return 128_000;
+    }
+
+    default boolean supportsPromptCaching() {
+        return false;
+    }
+
+    default String promptCacheMode() {
+        return "none";
+    }
 }

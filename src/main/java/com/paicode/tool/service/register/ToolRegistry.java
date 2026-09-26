@@ -2,6 +2,7 @@ package com.paicode.tool.service.register;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paicode.context.ContextProfile;
 import com.paicode.llm.entity.Tool;
 import com.paicode.mcp.entity.McpToolDescription;
 import com.paicode.runtime.CancellationContext;
@@ -34,6 +35,9 @@ public class ToolRegistry {
     private final Map<String, McpRegisteredTool> mcpTools = new ConcurrentHashMap<>();
     private PathGuard pathGuard = new PathGuard(projectPath);
     private final AuditLog auditLog = new AuditLog();
+
+    // 上下文管理策略
+    private ContextProfile contextProfile = ContextProfile.from(null);
 
     private final WebSearchTools webSearchTools = new WebSearchTools();
     private final FileTools fileTools = new FileTools(() -> pathGuard);
@@ -236,6 +240,7 @@ public class ToolRegistry {
         Objects.requireNonNull(serverName, "serverName");
         Objects.requireNonNull(newTools, "newTools");
         Objects.requireNonNull(invokerFactory, "invokerFactory");
+
         String prefix = "mcp__" + serverName + "__";
         List<String> existing = mcpTools.keySet().stream()
                 .filter(name -> name.startsWith(prefix))
@@ -247,6 +252,21 @@ public class ToolRegistry {
         for (McpToolDescription description : newTools) {
             registerMcpTool(description, invokerFactory.apply(description));
         }
+    }
+
+    public void setContextProfile(ContextProfile contextProfile) {
+        if (contextProfile != null) {
+            this.contextProfile = contextProfile;
+        }
+    }
+
+    /**
+     * 获取所有工具定义（用于LLM）
+     */
+    public List<Tool> getToolDefinitions() {
+        return tools.values().stream()
+                .map(t -> new Tool(t.name(), t.description(), t.parameters()))
+                .toList();
     }
 
     private static String mcpDescription(McpToolDescription description) {

@@ -17,6 +17,10 @@ public record ApprovalResult(ApprovalDecision decision, String modifiedArguments
         return new ApprovalResult(ApprovalDecision.APPROVED_ALL, null, null);
     }
 
+    public static ApprovalResult approveAllByServer() {
+        return new ApprovalResult(ApprovalDecision.APPROVED_ALL_BY_SERVER, null, null);
+    }
+
     public static ApprovalResult reject(String reason) {
         return new ApprovalResult(ApprovalDecision.REJECTED, null, reason);
     }
@@ -29,8 +33,22 @@ public record ApprovalResult(ApprovalDecision decision, String modifiedArguments
         return new ApprovalResult(ApprovalDecision.SKIPPED, null, null);
     }
 
+    public boolean isApproved() {
+        return decision == ApprovalDecision.APPROVED || decision == ApprovalDecision.APPROVED_ALL
+                || decision == ApprovalDecision.APPROVED_ALL_BY_SERVER
+                || decision == ApprovalDecision.MODIFIED;
+    }
+
     public boolean isApprovedAll() {
         return decision == ApprovalDecision.APPROVED_ALL;
+    }
+
+    public boolean isApprovedAllForTool() {
+        return decision == ApprovalDecision.APPROVED_ALL;
+    }
+
+    public boolean isApprovedAllForServer() {
+        return decision == ApprovalDecision.APPROVED_ALL_BY_SERVER;
     }
 
     public boolean isRejected() {

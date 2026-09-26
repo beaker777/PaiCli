@@ -24,4 +24,12 @@ public interface HitlHandler {
      * 启用 / 禁用 HITL
      */
     void setEnabled(boolean enabled);
+
+    default boolean isApprovedAllByTool(String toolName) {
+        return false;
+    }
+
+    default boolean isApprovedAllByServer(String serverName) {
+        return false;
+    }
 }

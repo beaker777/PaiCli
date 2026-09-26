@@ -3,12 +3,8 @@ package com.paicode.cli.service;
 import com.paicode.agent.MultiAgent.service.AgentOrchestrator;
 import com.paicode.agent.ReAct.Agent;
 import com.paicode.agent.PlanAndExecute.service.PlanAndExecuteAgent;
-import com.paicode.cli.entity.KeyReadResult;
-import com.paicode.cli.entity.PrefillResult;
-import com.paicode.cli.entity.PromptInput;
+import com.paicode.cli.entity.*;
 import com.paicode.cli.constant.EscapeSequenceType;
-import com.paicode.cli.entity.Decision;
-import com.paicode.cli.entity.ParsedCommand;
 import com.paicode.cli.constant.CommandType;
 import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
 import com.paicode.config.PaiCodeConfig;
@@ -53,9 +49,7 @@ import java.util.concurrent.*;
  * @Date 2026/9/9 19:56
  * @Description PaiCode v10.0 - MCP Enabled Agent CLI
  * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model, MCP, MCP resource
- *  v11 新增:
- *  1. stdio / streamable http mcp server
- *  2. MCP resources, @-mention, prompts 查看, 运行中取消
+ * 支持 Chrome Dev MCP
  */
 public class Main {
 
@@ -77,6 +71,18 @@ public class Main {
     private static final String ARROW_DOWN = "[B";
     private static final String APP_ARROW_UP = "OA";
     private static final String APP_ARROW_DOWN = "OB";
+
+    // Chrome MCP
+    private static final String DEFAULT_CHROME_DEVTOOLS_MCP_JSON = """
+            {
+              "mcpServers": {
+                "chrome-devtools": {
+                  "command": "npx",
+                  "args": ["-y", "chrome-devtools-mcp@latest", "--isolated=true"]
+                }
+              }
+            }
+            """;
 
     public static void main(String[] args) throws Exception {
         printBanner();
@@ -102,8 +108,16 @@ public class Main {
             // 创建 MCP 管理器
             McpServerManager mcpServerManager = new McpServerManager(hitlToolRegistry, Path.of("."));
             try {
+                McpConfigBootstrapResult bootstrapResult = ensureDefaultMcpConfig(Path.of(System.getProperty("user.home")));
+                if (!bootstrapResult.message().isBlank()) {
+                    System.out.println(bootstrapResult.message());
+                }
                 mcpServerManager.loadConfiguredServers();
-                mcpServerManager.startAll();
+                if (!mcpServerManager.servers().isEmpty()) {
+                    System.out.println("🔌 启动 MCP server（" + mcpServerManager.servers().size() + " 个）...");
+                }
+
+                mcpServerManager.startAll(System.out);
 
                 Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "paicode-mcp-shutdown"));
                 System.out.println(mcpServerManager.startupSummary());
@@ -123,6 +137,7 @@ public class Main {
 
             // 默认使用 ReAct 模式
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
+            reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             System.out.println("使用 ReAct 模式\n");
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
@@ -231,6 +246,7 @@ public class Main {
                                 reactAgent.setLlmClient(llmClient);
 
                                 System.out.println("✅ 已切换到: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
+                                System.out.println("   上下文策略: " + reactAgent.getMemoryManager().getContextProfile().summary());
                                 System.out.println("   对话上下文已保留，使用 /clear 可清空\n");
                             }
                         }
@@ -394,7 +410,7 @@ public class Main {
                     }
                 }
 
-                // 运行 Agent
+                // 运行 Agent, 调用 Mcp Resource
                 input = mentionExpander.expand(input);
                 System.out.println();
 
@@ -404,12 +420,14 @@ public class Main {
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
                         PlanAndExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader);
+                        planAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         return planAgent.run(taskInput);
                     };
                 } else if (nextTaskUseTeamMode || command.type() == CommandType.SWITCH_TEAM) {
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
                         AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent);
+                        orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         return orchestrator.run(taskInput);
                     };
                 } else {
@@ -954,6 +972,24 @@ public class Main {
         return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager());
     }
 
+    private static McpConfigBootstrapResult ensureDefaultMcpConfig(Path userHome) throws IOException {
+        Path configFile = userHome.resolve(".paicode").resolve("mcp.json");
+        if (Files.notExists(configFile)) {
+            Files.createDirectories(configFile.getParent());
+            Files.writeString(configFile, DEFAULT_CHROME_DEVTOOLS_MCP_JSON);
+            return new McpConfigBootstrapResult(true,
+                    "✅ 已创建默认 MCP 配置: " + configFile
+                            + "\n   默认启用 chrome-devtools（isolated 模式）。");
+        }
+
+        String content = Files.readString(configFile);
+        if (!content.contains("\"chrome-devtools\"")) {
+            return new McpConfigBootstrapResult(false,
+                    "ℹ️ 检测到 ~/.paicli/mcp.json 未配置 chrome-devtools，建议参考 README 添加浏览器 MCP server。");
+        }
+        return new McpConfigBootstrapResult(false, "");
+    }
+
     private static void printBanner() {
         System.out.println("╔══════════════════════════════════════════════════════════╗");
         System.out.println("║                                                          ║");
@@ -964,7 +1000,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      MCP-Native Agent CLI %-29s║%n", "v" + VERSION);
+        System.out.printf("║      Browser-Capable Agent CLI %-24s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -992,6 +1028,7 @@ public class Main {
                 "输入 '/hitl off' 关闭 HITL 审批",
                 "输入 '/mcp' 查看 MCP server，'/mcp restart|logs|disable|enable <name>' 管理 MCP",
                 "输入 '/mcp resources <name>' 查看 MCP resources，'/mcp prompts <name>' 查看 prompts",
+                "输入 '/mcp restart chrome-devtools' 重启浏览器 MCP server",
                 "在普通任务里输入 '@server:protocol://path' 可显式引用 MCP resource",
                 "输入 '/policy' 查看安全策略状态（路径围栏 / 命令黑名单 / 资源上限）",
                 "输入 '/audit [N]' 查看最近 N 条危险工具审计记录（默认 10）",

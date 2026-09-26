@@ -2,6 +2,7 @@ package com.paicode.memory.service.memorize;
 
 import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.service.query.MemoryQueryTokenizer;
+import lombok.Getter;
 
 import java.util.*;
 
@@ -10,10 +11,11 @@ import java.util.*;
  * @Date 2026/9/14 19:27
  * @Description 对话记忆, 短期记忆, 过期的记忆会被压缩
  */
+@Getter
 public class ConversationMemory implements Memory {
 
     private final Map<String, MemoryEntry> entries;
-    private final int maxTokens;
+    private int maxTokens;
     private int currentTokens;
     private final List<MemoryEntry> compressedSummaries;
 
@@ -81,8 +83,15 @@ public class ConversationMemory implements Memory {
         return entries.size();
     }
 
-    public int getMaxTokens() {
-        return maxTokens;
+    public void setMaxTokens(int maxTokens) {
+        if (maxTokens <= 0) {
+            throw new IllegalArgumentException("maxTokens must be positive");
+        }
+
+        this.maxTokens = maxTokens;
+        while (currentTokens > maxTokens && entries.size() > 1) {
+            removeOldest();
+        }
     }
 
     private void removeOldest() {

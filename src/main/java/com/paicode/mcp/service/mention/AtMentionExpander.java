@@ -22,6 +22,7 @@ public class AtMentionExpander {
     }
 
     public String expand(String input) {
+        // 解析 input 中的 tokens
         List<MentionToken> tokens = AtMentionParser.parse(input);
         if (tokens.isEmpty()) {
             return input;

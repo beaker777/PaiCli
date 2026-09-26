@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.function.Supplier;
 
 /**
  * @Author beaker
@@ -42,6 +43,7 @@ public class AgentOrchestrator {
     private final SubAgent reviewer;
     private final MemoryManager memoryManager;
     private final ToolRegistry toolRegistry;
+    private Supplier<String> externalContextSupplier = () -> "";
 
     public AgentOrchestrator(LlmClient llmClient) {
         this(llmClient, new ToolRegistry());
@@ -55,6 +57,7 @@ public class AgentOrchestrator {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.memoryManager = memoryManager;
+        this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
 
         this.planner = new SubAgent("planner", AgentRole.PLANNER, llmClient, toolRegistry);
         this.workers = List.of(
@@ -62,6 +65,13 @@ public class AgentOrchestrator {
                 new SubAgent("worker-02", AgentRole.WORKER, llmClient, toolRegistry)
         );
         this.reviewer = new SubAgent("reviewer", AgentRole.REVIEWER, llmClient, toolRegistry);
+    }
+
+    public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
+        this.externalContextSupplier = externalContextSupplier == null ? () -> "" : externalContextSupplier;
+        planner.setExternalContextSupplier(this.externalContextSupplier);
+        workers.forEach(worker -> worker.setExternalContextSupplier(this.externalContextSupplier));
+        reviewer.setExternalContextSupplier(this.externalContextSupplier);
     }
 
     /**

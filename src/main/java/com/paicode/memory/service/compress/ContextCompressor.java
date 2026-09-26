@@ -8,6 +8,7 @@ import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.constant.MemoryType;
 import com.paicode.memory.service.memorize.ConversationMemory;
 import com.paicode.memory.service.memorize.LongTermMemory;
+import lombok.Setter;
 
 import java.io.IOException;
 import java.util.*;
@@ -20,9 +21,10 @@ import java.util.*;
  * 2. 保留最近 N 轮完整信息
  * 3. 压缩后的摘要注入到 ConversationMemory
  */
+@Setter
 public class ContextCompressor {
 
-    private final LlmClient llmClient;
+    private LlmClient llmClient;
     private final int retainRecentRounds;
 
     private static final String MAP_PROMPT = """

@@ -28,6 +28,10 @@ import java.util.function.Consumer;
 public class McpClient implements AutoCloseable {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int DEFAULT_INITIALIZE_TIMEOUT_SECONDS = 60;
+    private static final String INITIALIZE_TIMEOUT_PROPERTY = "paicode.mcp.initialize.timeout.seconds";
+    private static final String INITIALIZE_TIMEOUT_ENV = "PAICODE_MCP_INITIALIZE_TIMEOUT_SECONDS";
+
 
     private final String serverName;
     private final JsonRpcClient rpc;
@@ -44,10 +48,27 @@ public class McpClient implements AutoCloseable {
      * 进行初始化握手
      */
     public void initialize() throws IOException {
-        JsonNode result = rpc.request("initialize", McpInitializeRequest.toJson(), 30);
+        JsonNode result = rpc.request("initialize", McpInitializeRequest.toJson(), initializeTimeoutSeconds());
         serverCapabilities = result == null ? JsonNodeFactory.instance.objectNode() : result.path("capabilities");
 
         rpc.sendNotification("notifications/initialized", JsonNodeFactory.instance.objectNode());
+    }
+
+    private static int initializeTimeoutSeconds() {
+        String config = System.getProperty(INITIALIZE_TIMEOUT_PROPERTY);
+        if (config == null || config.isBlank()) {
+            config = System.getenv(INITIALIZE_TIMEOUT_ENV);
+        }
+        if (config == null || config.isBlank()) {
+            return DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
+        }
+
+        try {
+            int seconds = Integer.parseInt(config.trim());
+            return seconds > 0 ? seconds : DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
+        } catch (NumberFormatException e) {
+            return DEFAULT_INITIALIZE_TIMEOUT_SECONDS;
+        }
     }
 
     public boolean supportsResources() {

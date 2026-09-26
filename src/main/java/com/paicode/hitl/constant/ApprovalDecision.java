@@ -11,6 +11,8 @@ public enum ApprovalDecision {
 
     APPROVED_ALL,
 
+    APPROVED_ALL_BY_SERVER,
+
     REJECTED,
 
     MODIFIED,

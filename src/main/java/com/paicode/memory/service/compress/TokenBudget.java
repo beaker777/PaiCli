@@ -27,6 +27,7 @@ public class TokenBudget {
 
     private int totalInputTokens;
     private int totalOutputTokens;
+    private int totalCachedInputTokens;
     private int llmCallCount;
 
     public TokenBudget(int contextWindow) {
@@ -40,6 +41,7 @@ public class TokenBudget {
         this.reservedForResponse = reservedForResponse;
         this.totalInputTokens = 0;
         this.totalOutputTokens = 0;
+        this.totalCachedInputTokens = 0;
         this.llmCallCount = 0;
     }
 
@@ -59,17 +61,33 @@ public class TokenBudget {
     }
 
     /**
-     * 检查是否需要压缩, 超过预算的 80% 就开始压缩
+     * 检查是否需要压缩, 超过指定的占用率就压缩
+     */
+    public boolean needsCompression(ConversationMemory memory, double triggerRatio) {
+        // 压缩预算为短期记忆的 maxToken 和 contextWindow 中的较小值
+        int compressionBudget = Math.min(memory.getMaxTokens(), getAvailableForConversation());
+        return memory.getTokenCount() >= compressionBudget * triggerRatio;
+    }
+
+    /**
+     * 兼容旧调用方, 默认 80%
      */
     public boolean needsCompression(ConversationMemory memory) {
-        // 压缩预算为短期记忆的 maxToken 和 contextWindow 中的较小值
         int compressionBudget = Math.min(memory.getMaxTokens(), getAvailableForConversation());
         return memory.getTokenCount() >= compressionBudget * 0.8;
     }
 
+    /**
+     * 统计 token 使用
+     */
     public void recordUsage(int inputTokens, int outputTokens) {
+        recordUsage(inputTokens, outputTokens, 0);
+    }
+
+    public void recordUsage(int inputTokens, int outputTokens, int cachedInputTokens) {
         totalInputTokens += inputTokens;
         totalOutputTokens += outputTokens;
+        totalCachedInputTokens += cachedInputTokens;
         llmCallCount ++;
     }
 
@@ -79,8 +97,8 @@ public class TokenBudget {
     public String getUsageReport() {
         double avgInput = llmCallCount > 0 ? (double) totalInputTokens / llmCallCount : 0;
         return String.format(
-                "Token 统计: 调用 %d 次 | 总输入: %d | 总输出: %d | 平均输入: %.0f | 预算: %d (可用: %d)",
-                llmCallCount, totalInputTokens, totalOutputTokens, avgInput,
+                "Token 统计: 调用 %d 次 | 总输入: %d | 总输出: %d | cached: %d | 平均输入: %.0f | 预算: %d (可用: %d)",
+                llmCallCount, totalInputTokens, totalOutputTokens, totalCachedInputTokens, avgInput,
                 contextWindow, getAvailableForConversation()
         );
     }

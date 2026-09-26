@@ -27,7 +27,7 @@ public class RagTools {
                 "语义检索代码库, 根据自然语言查找相关代码块",
                 ToolSchema.createParameters(
                         new Param("query", "string", "自然语言描述查询内容, 如'用户登录的实现'", true),
-                        new Param("top_k", "integer", "返回结果数量 (默认为 5)", false)
+                        new Param("top_k", "integer", "返回结果数量 (默认为 5, 上限为 30)", false)
                 ),
                 args -> {
                     String query = args.get("query");
@@ -38,6 +38,7 @@ public class RagTools {
                         }
                     } catch (NumberFormatException ignored) {
                     }
+                    topK = Math.max(1, Math.min(topK, 30));
 
                     try (CodeRetriever retriever = new CodeRetriever(projectPath)) {
                         IndexStats stats = retriever.getStats();

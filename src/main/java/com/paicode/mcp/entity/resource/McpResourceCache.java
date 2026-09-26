@@ -14,6 +14,9 @@ public class McpResourceCache {
     private final Set<String> staleServers = ConcurrentHashMap.newKeySet();
     private final Map<String, Set<String>> staleUrisByServer = new ConcurrentHashMap<>();
 
+    /**
+     * 添加缓存, 移除过期标志
+     */
     public void put(String serverName, List<McpResourceDescription> resources) {
         if (serverName == null || serverName.isBlank()) {
             return;
@@ -24,6 +27,9 @@ public class McpResourceCache {
         staleUrisByServer.remove(serverName);
     }
 
+    /**
+     * 获取 server 的 resources
+     */
     public List<McpResourceDescription> get(String serverName) {
         if (serverName == null || isServerStale(serverName)) {
             return List.of();
@@ -32,6 +38,9 @@ public class McpResourceCache {
         return byServer.getOrDefault(serverName, List.of());
     }
 
+    /**
+     * 获取所有有效 server 的 resource
+     */
     public List<McpResourceDescription> all() {
         List<McpResourceDescription> resources = new ArrayList<>();
         byServer.keySet().stream()
@@ -44,22 +53,30 @@ public class McpResourceCache {
         return resources;
     }
 
+    /**
+     * 将整个 server 标记为过期
+     */
     public void invalidateServer(String serverName) {
         if (serverName != null && !serverName.isBlank()) {
             staleServers.add(serverName);
         }
     }
 
+    /**
+     * 将某个具体的 resource 设置为过期
+     */
     public void invalidateResource(String serverName, String uri) {
         if (serverName == null || serverName.isBlank() || uri == null || uri.isBlank()) {
             return;
         }
-
         staleUrisByServer
                 .computeIfAbsent(serverName, ignored -> ConcurrentHashMap.newKeySet())
                 .add(uri);
     }
 
+    /**
+     * 是否过期
+     */
     public boolean isServerStale(String serverName) {
         return serverName != null && staleServers.contains(serverName);
     }
@@ -68,7 +85,6 @@ public class McpResourceCache {
         if (serverName == null || uri == null) {
             return false;
         }
-
         return staleUrisByServer.getOrDefault(serverName, Set.of()).contains(uri);
     }
 
