@@ -13,6 +13,9 @@ public enum CommandType {
     // 未知命令
     UNKNOWN_COMMAND,
 
+    // 取消
+    CANCEL,
+
     // 退出 agent
     EXIT,
 
@@ -72,4 +75,10 @@ public enum CommandType {
 
     // mcp 启用
     MCP_ENABLE,
+
+    // mcp 资源
+    MCP_RESOURCES,
+
+    // mcp prompt
+    MCP_PROMPTS,
 }

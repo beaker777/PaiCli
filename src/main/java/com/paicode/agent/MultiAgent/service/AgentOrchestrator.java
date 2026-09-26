@@ -10,6 +10,7 @@ import com.paicode.agent.MultiAgent.constant.StepStatus;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.memory.service.manager.MemoryManager;
+import com.paicode.runtime.CancellationContext;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
 import org.slf4j.Logger;
@@ -69,6 +70,10 @@ public class AgentOrchestrator {
     public String run(String userInput) {
         log.info("Multi-Agent run started: inputLength={}", userInput == null ? 0 : userInput.length());
         memoryManager.addUserMessage(userInput);
+        if (CancellationContext.isCancelled()) {
+            return "⏹️ 已取消当前多 Agent 任务。";
+        }
+
 
         // 规划阶段, planner 制定任务
         System.out.println(AnsiStyle.heading("第一阶段, 规划: "));
@@ -77,6 +82,9 @@ public class AgentOrchestrator {
         AgentMessage planMessage = AgentMessage.task("orchestrator", "请为以下任务制定执行计划: \n" + userInput);
         AgentMessage planResult = planner.execute(planMessage);
         planner.clearHistory();
+        if (CancellationContext.isCancelled()) {
+            return "⏹️ 已取消当前多 Agent 任务。";
+        }
 
         if (planResult.type() == AgentMessageType.ERROR) {
             return "规划失败, LLM 调用出错: " + planResult.content();
@@ -101,6 +109,10 @@ public class AgentOrchestrator {
         int batchIndex = 0;
 
         while (true) {
+            if (CancellationContext.isCancelled()) {
+                return "⏹️ 已取消当前多 Agent 任务。";
+            }
+
             List<ExecutionStep> executable = getExecutableTasks(steps);
             if (executable.isEmpty()) {
                 break;
@@ -265,9 +277,19 @@ public class AgentOrchestrator {
                          SubAgent worker, SubAgent reviewer, String context, PrintStream out) {
         // 执行任务
         out.println(worker.getName() + " 执行步骤 [" + step.id() + "]: " + step.description());
+        if (CancellationContext.isCancelled()) {
+            updateStep(steps, step.id(), step.withFailed("用户取消"));
+            out.println("⏹️ 步骤 [" + step.id() + "] 已取消\n");
+            return;
+        }
 
         AgentMessage taskMsg = AgentMessage.task("orchestrator", step.description());
         AgentMessage result = worker.executeWithContext(taskMsg, context, out);
+        if (CancellationContext.isCancelled()) {
+            updateStep(steps, step.id(), step.withFailed("用户取消"));
+            out.println("⏹️ 步骤 [" + step.id() + "] 已取消\n");
+            return;
+        }
 
         if (result.type() == AgentMessageType.ERROR) {
             updateStep(steps, step.id(), step.withFailed(result.content()));

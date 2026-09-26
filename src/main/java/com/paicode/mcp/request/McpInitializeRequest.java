@@ -22,7 +22,7 @@ public final class McpInitializeRequest {
 
         ObjectNode clientInfo = root.putObject("clientInfo");
         clientInfo.put("name", "paicode");
-        clientInfo.put("version", "10.0.0");
+        clientInfo.put("version", "11.0.0");
 
         return root;
     }

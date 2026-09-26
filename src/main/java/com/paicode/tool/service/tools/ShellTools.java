@@ -72,6 +72,12 @@ public class ShellTools {
             String output = getCommandOutput(outputFuture);
             int exitCode = process.exitValue();
             return String.format("命令执行完成 (exit code: %d)\n%s", exitCode, output);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            if (process != null) {
+                process.destroyForcibly();
+            }
+            return "用户取消了此次工具调用";
         } catch (Exception e) {
             if (process != null) {
                 process.destroyForcibly();

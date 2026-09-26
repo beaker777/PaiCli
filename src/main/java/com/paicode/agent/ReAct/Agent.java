@@ -11,6 +11,7 @@ import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.AgentStreamListener;
 import com.paicode.memory.service.manager.MemoryManager;
+import com.paicode.runtime.CancellationContext;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
@@ -120,6 +121,11 @@ public class Agent {
         AgentBudget budget = AgentBudget.fromSystemProperties();
 
         while (true) {
+            if (CancellationContext.isCancelled()) {
+                log.info("ReAct run cancelled before iteration");
+                return "⏹️ 已取消当前任务。";
+            }
+
             ExitReason exitReason = budget.check();
             if (exitReason != ExitReason.WITHIN_BUDGET) {
                 String statsLine = formatTokenStats(budget.totalInputTokens(), budget.totalOutputTokens(), startNanos);
@@ -134,6 +140,10 @@ public class Agent {
             int iteration = budget.beginIteration();
             try {
                 ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamListener);
+                if (CancellationContext.isCancelled()) {
+                    log.info("ReAct run cancelled after LLM response");
+                    return "⏹️ 已取消当前任务。";
+                }
 
                 // 记录 Token 消耗
                 budget.recordTokens(response.inputTokens(), response.outputTokens());

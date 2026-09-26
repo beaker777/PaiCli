@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.llm.entity.Tool;
 import com.paicode.mcp.entity.McpToolDescription;
+import com.paicode.runtime.CancellationContext;
 import com.paicode.tool.entity.*;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.policy.exception.PolicyException;
@@ -133,6 +134,11 @@ public class ToolRegistry {
         if (invocations == null || invocations.isEmpty()) {
             return List.of();
         }
+        if (CancellationContext.isCancelled()) {
+            return invocations.stream()
+                    .map(invocation -> ToolExecutionResult.failed(invocation, "用户取消了此次工具调用"))
+                    .toList();
+        }
 
         if (invocations.size() == 1) {
             // 单个工具调用直接执行
@@ -155,6 +161,10 @@ public class ToolRegistry {
         try {
             List<Callable<ToolExecutionResult>> tasks = invocations.stream()
                     .<Callable<ToolExecutionResult>>map(invocation -> () -> {
+                        if (CancellationContext.isCancelled()) {
+                            return ToolExecutionResult.failed(invocation, "用户取消了此次工具调用");
+                        }
+
                         long startedAt = System.nanoTime();
                         String result = executeTool(invocation.name(), invocation.argumentsJson());
                         return ToolExecutionResult.completed(invocation, result, elapsedMillis(startedAt));
@@ -196,7 +206,7 @@ public class ToolRegistry {
         }
     }
 
-    public void registerMcpTool(McpToolDescription description, Function<String, String> invoker) {
+    public synchronized void registerMcpTool(McpToolDescription description, Function<String, String> invoker) {
         Objects.requireNonNull(description, "description");
         Objects.requireNonNull(invoker, "invoker");
 
@@ -212,13 +222,31 @@ public class ToolRegistry {
         ));
     }
 
-    public void unregisterMcpTool(String toolName) {
+    public synchronized void unregisterMcpTool(String toolName) {
         if (toolName == null || toolName.isBlank()) {
             return;
         }
 
         mcpTools.remove(toolName);
         tools.remove(toolName);
+    }
+
+    public synchronized void replaceMcpToolsForServer(String serverName, List<McpToolDescription> newTools,
+                                                      Function<McpToolDescription, Function<String, String>> invokerFactory) {
+        Objects.requireNonNull(serverName, "serverName");
+        Objects.requireNonNull(newTools, "newTools");
+        Objects.requireNonNull(invokerFactory, "invokerFactory");
+        String prefix = "mcp__" + serverName + "__";
+        List<String> existing = mcpTools.keySet().stream()
+                .filter(name -> name.startsWith(prefix))
+                .toList();
+        for (String toolName : existing) {
+            mcpTools.remove(toolName);
+            tools.remove(toolName);
+        }
+        for (McpToolDescription description : newTools) {
+            registerMcpTool(description, invokerFactory.apply(description));
+        }
     }
 
     private static String mcpDescription(McpToolDescription description) {

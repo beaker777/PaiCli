@@ -27,6 +27,10 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.EXIT, null);
         }
 
+        if (trimmed.equalsIgnoreCase("/cancel") || trimmed.equalsIgnoreCase("cancel")) {
+            return new ParsedCommand(CommandType.CANCEL, null);
+        }
+
         if (trimmed.equalsIgnoreCase("clear")) {
             return new ParsedCommand(CommandType.CLEAR, null);
         }
@@ -138,6 +142,15 @@ public class CliCommandParser {
         if (trimmed.regionMatches(true, 0, "/mcp enable ", 0, 12)) {
             return new ParsedCommand(CommandType.MCP_ENABLE, trimmed.substring(12).trim());
         }
+
+        if (trimmed.regionMatches(true, 0, "/mcp resources ", 0, 15)) {
+            return new ParsedCommand(CommandType.MCP_RESOURCES, trimmed.substring(15).trim());
+        }
+
+        if (trimmed.regionMatches(true, 0, "/mcp prompts ", 0, 13)) {
+            return new ParsedCommand(CommandType.MCP_PROMPTS, trimmed.substring(13).trim());
+        }
+
 
         if (trimmed.startsWith("/")) {
             return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);

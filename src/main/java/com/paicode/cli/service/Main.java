@@ -18,8 +18,11 @@ import com.paicode.hitl.service.TerminalHitlHandler;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.factory.LlmClientFactory;
 import com.paicode.mcp.service.manage.McpServerManager;
+import com.paicode.mcp.service.mention.AtMentionCompleter;
+import com.paicode.mcp.service.mention.AtMentionExpander;
 import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.PlanReviewHandler;
+import com.paicode.plan.entity.Task;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.rag.service.manage.CodeIndex;
 import com.paicode.rag.service.retrieve.CodeRetriever;
@@ -28,6 +31,8 @@ import com.paicode.rag.entity.IndexResult;
 import com.paicode.rag.entity.IndexStats;
 import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.retrieve.SearchResultFormatter;
+import com.paicode.runtime.CancellationContext;
+import com.paicode.runtime.CancellationToken;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
@@ -41,18 +46,20 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.*;
 
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
  * @Description PaiCode v10.0 - MCP Enabled Agent CLI
- * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model, MCP
- *  v10 新增:
+ * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model, MCP, MCP resource
+ *  v11 新增:
  *  1. stdio / streamable http mcp server
+ *  2. MCP resources, @-mention, prompts 查看, 运行中取消
  */
 public class Main {
 
-    private static final String VERSION = "10.0.0";
+    private static final String VERSION = "11.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -88,11 +95,6 @@ public class Main {
 
         // 使用 try-with-resource 确保 Terminal 正确关闭
         try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
-            LineReader lineReader = LineReaderBuilder.builder()
-                    .terminal(terminal)
-                    .build();
-            lineReader.option(LineReader.Option.BRACKETED_PASTE, true);
-
             // 创建 HITL 处理器 (默认关闭)
             TerminalHitlHandler hitlHandler = new TerminalHitlHandler(false);
             HitlToolRegistry hitlToolRegistry = new HitlToolRegistry(hitlHandler);
@@ -110,6 +112,14 @@ public class Main {
                 System.out.println("⚠️ MCP 初始化失败: " + e.getMessage());
                 System.out.println("   可检查 ~/.paicode/mcp.json 或 .paicode/mcp.json\n");
             }
+
+            // 创建 lineReader
+            LineReader lineReader = LineReaderBuilder.builder()
+                    .terminal(terminal)
+                    .completer(new AtMentionCompleter(mcpServerManager::resourceCandidates))
+                    .build();
+            lineReader.option(LineReader.Option.BRACKETED_PASTE, true);
+            AtMentionExpander mentionExpander = new AtMentionExpander(mcpServerManager);
 
             // 默认使用 ReAct 模式
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
@@ -162,6 +172,10 @@ public class Main {
                     case EXIT -> {
                         System.out.println("\n再见!");
                         return;
+                    }
+                    case CANCEL -> {
+                        System.out.println("当前没有正在运行的任务。\n");
+                        continue;
                     }
                     case CLEAR -> {
                         reactAgent.clearHistory();
@@ -293,6 +307,14 @@ public class Main {
                         printMcpCommandResult(mcpServerManager.enable(command.payload()));
                         continue;
                     }
+                    case MCP_RESOURCES -> {
+                        printMcpCommandResult(mcpServerManager.resources(command.payload()));
+                        continue;
+                    }
+                    case MCP_PROMPTS -> {
+                        printMcpCommandResult(mcpServerManager.prompts(command.payload()));
+                        continue;
+                    }
                     case INDEX_CODE -> {
                         String indexPath = command.payload() != null ? command.payload() : ".";
                         System.out.println("正在索引代码库: " + indexPath);
@@ -373,25 +395,134 @@ public class Main {
                 }
 
                 // 运行 Agent
+                input = mentionExpander.expand(input);
                 System.out.println();
-                String response;
+
+                String taskInput = input;
+                Callable<String> runTask;
                 if (nextTaskUsePlanMode || command.type() == CommandType.SWITCH_PLAN) {
-                    PlanAndExecuteAgent planAgent = createPlanAgent(llmClient, reactAgent, terminal, lineReader);
-                    response = planAgent.run(input);
-                    nextTaskUsePlanMode = false;
+                    LlmClient activeClient = llmClient;
+                    runTask = () -> {
+                        PlanAndExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader);
+                        return planAgent.run(taskInput);
+                    };
                 } else if (nextTaskUseTeamMode || command.type() == CommandType.SWITCH_TEAM) {
-                    AgentOrchestrator orchestrator = createTeamAgent(llmClient, reactAgent);
-                    response = orchestrator.run(input);
-                    nextTaskUseTeamMode = false;
+                    LlmClient activeClient = llmClient;
+                    runTask = () -> {
+                        AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent);
+                        return orchestrator.run(taskInput);
+                    };
                 } else {
-                    response = reactAgent.run(input);
+                    runTask = () -> reactAgent.run(taskInput);
                 }
+                String response = runWithCancelSupport(terminal, runTask);
+                nextTaskUsePlanMode = false;
+                nextTaskUseTeamMode = false;
+
                 if (response != null && !response.isBlank()) {
-                    System.out.println("Agent: " + response);
+                    System.out.println(response);
                     System.out.println();
                 }
             }
         }
+    }
+
+    private static String runWithCancelSupport(Terminal terminal, Callable<String> task) {
+        CancellationToken token = CancellationContext.startRun();
+        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "paicode-agent-runner");
+            thread.setDaemon(true);
+            return thread;
+        });
+        Future<String> future = executor.submit(task);
+
+        Attributes original = null;
+        boolean hintPrinted = false;
+        try {
+            if (terminal != null) {
+                try {
+                    original = terminal.enterRawMode();
+                } catch (Exception ignored) {
+                    // raw mode 进入失败（非交互终端等），降级为不监听 ESC，靠 Ctrl+C 退出。
+                }
+            }
+
+            while (!future.isDone()) {
+                if (!hintPrinted) {
+                    System.out.println("   运行中按 ESC 取消当前任务。");
+                    hintPrinted = true;
+                }
+                if (original != null && readEscCancel(terminal)) {
+                    token.cancel();
+                    future.cancel(true);
+                    executor.shutdownNow();
+                    return "⏹️ 已请求取消当前任务。";
+
+                }
+                try {
+                    return future.get(150, TimeUnit.MILLISECONDS);
+                } catch (java.util.concurrent.TimeoutException ignored) {
+                    // 继续监听 ESC
+                }
+            }
+            return future.get();
+        } catch (CancellationException e) {
+            return "⏹️ 已取消当前任务。";
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            token.cancel();
+            future.cancel(true);
+            return "⏹️ 已取消当前任务。";
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            String message = cause == null || cause.getMessage() == null ? "未知错误" : cause.getMessage();
+            return "❌ 执行失败: " + message;
+        } finally {
+            if (terminal != null && original != null) {
+                try {
+                    terminal.setAttributes(original);
+                } catch (Exception ignored) {
+                }
+            }
+            CancellationContext.clear(token);
+            executor.shutdownNow();
+        }
+    }
+
+    private static boolean readEscCancel(Terminal terminal) {
+        if (terminal == null) {
+            return false;
+        }
+
+        try {
+            NonBlockingReader reader = terminal.reader();
+            int next = reader.read(50);
+            if (next == NonBlockingReader.READ_EXPIRED || next < 0) {
+                return false;
+            }
+            String escTail = next == 27 ? readInputBurst(terminal, 80, 20, 120) : null;
+            if (next != 27) {
+                // 非 ESC 输入，drain 这一轮残余字节避免堆积，但不触发取消。
+                while (true) {
+                    int more = reader.read(1);
+                    if (more == NonBlockingReader.READ_EXPIRED || more < 0) {
+                        break;
+                    }
+                }
+            }
+            return decideEscCancel(next, escTail);
+        } catch (Exception ignored) {
+            // 监听是 best-effort；失败不能影响任务执行。
+            return false;
+        }
+    }
+
+    private static boolean decideEscCancel(int firstByte, String escTail) {
+        if (firstByte != 27) {
+            return false;
+        }
+
+        return classifyEscapeSequence(escTail) == EscapeSequenceType.STANDALONE_ESC;
     }
 
     private static PromptInput readPromptInput(Terminal terminal, LineReader lineReader, boolean allowEscCancel)
@@ -833,7 +964,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      MCP-Enabled Agent CLI %-28s║%n", "v" + VERSION);
+        System.out.printf("║      MCP-Native Agent CLI %-29s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -856,9 +987,12 @@ public class Main {
                 "输入 '/team' 后，下一条任务使用 Multi-Agent 协作模式",
                 "输入 '/team 任务内容' 直接用多 Agent 协作执行这条任务",
                 "计划生成后可直接执行、补充要求重规划，或取消",
+                "任务运行中按 ESC 取消当前任务",
                 "输入 '/hitl on' 启用危险操作人工审批（HITL）",
                 "输入 '/hitl off' 关闭 HITL 审批",
                 "输入 '/mcp' 查看 MCP server，'/mcp restart|logs|disable|enable <name>' 管理 MCP",
+                "输入 '/mcp resources <name>' 查看 MCP resources，'/mcp prompts <name>' 查看 prompts",
+                "在普通任务里输入 '@server:protocol://path' 可显式引用 MCP resource",
                 "输入 '/policy' 查看安全策略状态（路径围栏 / 命令黑名单 / 资源上限）",
                 "输入 '/audit [N]' 查看最近 N 条危险工具审计记录（默认 10）",
                 "输入 '/index [路径]' 为代码库建立向量索引",

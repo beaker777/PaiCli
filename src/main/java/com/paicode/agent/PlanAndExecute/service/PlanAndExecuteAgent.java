@@ -18,6 +18,7 @@ import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.plan.service.Planner;
 import com.paicode.plan.entity.Task;
 import com.paicode.agent.PlanAndExecute.constant.PlanReviewAction;
+import com.paicode.runtime.CancellationContext;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
@@ -115,6 +116,9 @@ public class PlanAndExecuteAgent {
     public String run(String userInput) {
         log.info("Plan run started: inputLength={}", userInput == null ? 0 : userInput.length());
         memoryManager.addUserMessage(userInput);
+        if (CancellationContext.isCancelled()) {
+            return "⏹️ 已取消当前计划执行。";
+        }
 
         StreamState streamState = new StreamState();
         try {
@@ -174,6 +178,10 @@ public class PlanAndExecuteAgent {
 
         // 任务分批次并行执行
         while (true) {
+            if (CancellationContext.isCancelled()) {
+                return "⏹️ 已取消当前计划执行。";
+            }
+
             // 按顺序获取可执行计划
             List<Task> executableTasks = getExecutableTasksInOrder(plan);
             if (executableTasks.isEmpty()) {
@@ -362,10 +370,19 @@ public class PlanAndExecuteAgent {
 
         // 支持 ReAct 模式
         while (iteration < MAX_TASK_ITERATIONS) {
+            if (CancellationContext.isCancelled()) {
+                streamRender.finish();
+                return TaskRunResult.of("⏹️ 已取消任务 [" + task.getId() + "]。", streamRender.hasStreamedOutput());
+            }
             iteration ++;
 
             // 调用 LLM
             ChatResponse response = llmClient.chat(messages, toolRegistry.getTools(), streamRender);
+            if (CancellationContext.isCancelled()) {
+                streamRender.finish();
+                return TaskRunResult.of("⏹️ 已取消任务 [" + task.getId() + "]。", streamRender.hasStreamedOutput());
+            }
+
             log.info("Task {} iteration {} response: toolCalls={}, reasoningChars={}, contentChars={}",
                     task.getId(),
                     iteration,

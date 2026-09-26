@@ -2,21 +2,26 @@ package com.paicode.mcp.service.manage;
 
 import com.paicode.mcp.constant.McpServerStatus;
 import com.paicode.mcp.entity.McpToolDescription;
+import com.paicode.mcp.entity.ResourceReadResult;
+import com.paicode.mcp.entity.resource.McpResourceCache;
+import com.paicode.mcp.entity.resource.McpResourceContent;
+import com.paicode.mcp.entity.resource.McpResourceDescription;
+import com.paicode.mcp.entity.resource.McpResourceTool;
 import com.paicode.mcp.service.config.McpConfigLoader;
 import com.paicode.mcp.service.config.McpServerConfig;
+import com.paicode.mcp.service.notification.NotificationRouter;
 import com.paicode.mcp.service.transport.McpTransport;
 import com.paicode.mcp.service.transport.impl.StdioTransport;
 import com.paicode.mcp.service.transport.impl.StreamableHttpTransport;
+import com.paicode.policy.entity.AuditEntry;
+import com.paicode.policy.service.audit.AuditLog;
 import com.paicode.tool.service.register.ToolRegistry;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -30,6 +35,7 @@ public class McpServerManager implements AutoCloseable {
     private final Path projectDir;
     private final McpConfigLoader configLoader;
     private final Map<String, McpServer> servers = new ConcurrentHashMap<>();
+    private final McpResourceCache resourceCache = new McpResourceCache();
 
     public McpServerManager(ToolRegistry toolRegistry, Path projectDir) {
         this(toolRegistry, projectDir, new McpConfigLoader(projectDir));
@@ -110,14 +116,13 @@ public class McpServerManager implements AutoCloseable {
             McpClient client = new McpClient(server.name(), transport);
             client.initialize();
 
-            // 检验 tools
-            List<McpToolDescription> tools = client.listTools();
-            validateNoDuplicateTools(server.name(), tools);
+            // 注册通知 handler
+            registerNotificationHandlers(server, client);
 
-            // 注册 tools
-            for (McpToolDescription descriptor : tools) {
-                toolRegistry.registerMcpTool(descriptor, args -> invokeMcpTool(client, descriptor, args));
-            }
+            // 检验并注册 tools
+            List<McpToolDescription> tools = buildToolList(server, client);
+            replaceTools(server, client, tools);
+
             server.client(client);
             server.tools(tools);
             server.markStarted();
@@ -253,11 +258,138 @@ public class McpServerManager implements AutoCloseable {
         return sb.toString();
     }
 
-    private static String invokeMcpTool(McpClient client, McpToolDescription descriptor, String argumentsJson) {
+    public List<McpResourceDescription> resourceCandidates() {
+        return resourceCache.all();
+    }
+
+    public String resources(String serverName) {
+        McpServer server = servers.get(serverName);
+        if (server == null) {
+            return "未找到 MCP server: " + serverName;
+        }
+        if (server.client() == null || server.status() != McpServerStatus.READY) {
+            return "MCP server 未就绪: " + serverName + " (" + server.status() + ")";
+        }
         try {
-            return client.callTool(descriptor.name(), argumentsJson);
+            List<McpResourceDescription> resources = refreshResources(server);
+            return McpClient.formatResources(resources);
         } catch (Exception e) {
-            return "MCP 工具调用失败 (" + descriptor.serverName() + "/" + descriptor.name() + "): " + e.getMessage();
+            return "读取 MCP resources 失败: " + e.getMessage();
+        }
+    }
+
+    public String prompts(String serverName) {
+        McpServer server = servers.get(serverName);
+        if (server == null) {
+            return "未找到 MCP server: " + serverName;
+        }
+        if (server.client() == null || server.status() != McpServerStatus.READY) {
+            return "MCP server 未就绪: " + serverName + " (" + server.status() + ")";
+        }
+        try {
+            List<String> prompts = server.client().listPrompts();
+            if (prompts.isEmpty()) {
+                return "📭 该 MCP server 暂无 prompts: " + serverName;
+            }
+            StringBuilder sb = new StringBuilder("🧩 MCP prompts - ").append(serverName).append('\n');
+            for (String prompt : prompts) {
+                sb.append("- ").append(prompt).append('\n');
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "读取 MCP prompts 失败: " + e.getMessage();
+        }
+    }
+
+    public ResourceReadResult readResourceForMention(String serverName, String uri) throws IOException {
+        McpServer server = servers.get(serverName);
+        if (server == null) {
+            throw new IOException("未找到 MCP server: " + serverName);
+        }
+        if (server.client() == null || server.status() != McpServerStatus.READY) {
+            throw new IOException("MCP server 未就绪: " + serverName + " (" + server.status() + ")");
+        }
+        long start = System.nanoTime();
+        String toolName = McpToolDescription.namespaced(serverName, McpResourceTool.READ_RESOURCE);
+        String args = "{\"uri\":\"" + uri.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
+        try {
+            if (resourceCache.isServerStale(serverName)) {
+                refreshResources(server);
+            }
+            List<McpResourceContent> contents = server.client().readResource(uri);
+            resourceCache.markResourceFresh(serverName, uri);
+            toolRegistry.getAuditLog().record(AuditEntry.allowByMention(
+                    toolName, args, elapsedMillis(start)));
+            return ResourceReadResult.from(contents);
+        } catch (Exception e) {
+            toolRegistry.getAuditLog().record(AuditEntry.error(
+                    toolName, args, e.getMessage(), elapsedMillis(start)));
+            if (e instanceof IOException ioException) {
+                throw ioException;
+            }
+            throw new IOException(e.getMessage(), e);
+        }
+    }
+
+    private List<McpToolDescription> buildToolList(McpServer server, McpClient client) throws IOException {
+        List<McpToolDescription> tools = new ArrayList<>(client.listTools());
+        if (client.supportsResources()) {
+            List<McpResourceDescription> resources = client.listResources();
+            resourceCache.put(server.name(), resources);
+            tools.addAll(McpResourceTool.descriptions(server.name()));
+        }
+        validateNoDuplicateTools(server.name(), tools);
+        return tools;
+    }
+
+    private void replaceTools(McpServer server, McpClient client, List<McpToolDescription> tools) {
+        toolRegistry.replaceMcpToolsForServer(server.name(), tools,
+                description -> isResourceVirtualTool(description)
+                        ? McpResourceTool.invoker(client, description)
+                        : args -> invokeMcpTool(client, description, args));
+    }
+
+    private boolean isResourceVirtualTool(McpToolDescription description) {
+        return McpResourceTool.LIST_RESOURCES.equals(description.name())
+                || McpResourceTool.READ_RESOURCE.equals(description.name());
+    }
+
+    private void registerNotificationHandlers(McpServer server, McpClient client) {
+        NotificationRouter router = new NotificationRouter();
+        router.on("notifications/tools/list_changed", ignored -> {
+            try {
+                List<McpToolDescription> tools = buildToolList(server, client);
+                replaceTools(server, client, tools);
+                server.tools(tools);
+            } catch (Exception e) {
+                server.errorMessage("tools/list_changed 处理失败: " + e.getMessage());
+            }
+        });
+        router.on("notifications/resources/list_changed", ignored -> resourceCache.invalidateServer(server.name()));
+        router.on("notifications/resources/updated", params -> {
+            String uri = params.path("uri").asText("");
+            if (!uri.isBlank()) {
+                resourceCache.invalidateResource(server.name(), uri);
+            }
+        });
+        client.onNotification(router);
+    }
+
+    private List<McpResourceDescription> refreshResources(McpServer server) throws IOException {
+        List<McpResourceDescription> resources = server.client().listResources();
+        resources = resources.stream()
+                .sorted(Comparator.comparing(McpResourceDescription::uri))
+                .toList();
+        resourceCache.put(server.name(), resources);
+        return resources;
+    }
+
+
+    private static String invokeMcpTool(McpClient client, McpToolDescription description, String argumentsJson) {
+        try {
+            return client.callTool(description.name(), argumentsJson);
+        } catch (Exception e) {
+            return "MCP 工具调用失败 (" + description.serverName() + "/" + description.name() + "): " + e.getMessage();
         }
     }
 
@@ -312,6 +444,10 @@ public class McpServerManager implements AutoCloseable {
         if (minutes < 60) return minutes + "m";
 
         return (minutes / 60) + "h";
+    }
+
+    private static long elapsedMillis(long startedAtNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
     }
 
     @Override
