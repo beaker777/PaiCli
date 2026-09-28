@@ -2,6 +2,9 @@ package com.paicode.tool.service.register;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paicode.browser.entity.BrowserAuditMetadata;
+import com.paicode.browser.entity.BrowserCheckResult;
+import com.paicode.browser.service.guard.BrowserGuard;
 import com.paicode.context.ContextProfile;
 import com.paicode.llm.entity.Tool;
 import com.paicode.mcp.entity.McpToolDescription;
@@ -13,6 +16,7 @@ import com.paicode.policy.service.audit.AuditLog;
 import com.paicode.policy.service.guard.PathGuard;
 import com.paicode.tool.service.tools.*;
 import lombok.Getter;
+import lombok.Setter;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -24,6 +28,7 @@ import java.util.function.Function;
  * @Description 工具注册表
  */
 @Getter
+@Setter
 public class ToolRegistry {
 
     private static final ObjectMapper mapper = new ObjectMapper();
@@ -38,6 +43,9 @@ public class ToolRegistry {
 
     // 上下文管理策略
     private ContextProfile contextProfile = ContextProfile.from(null);
+
+    // 浏览器安全管理
+    private BrowserGuard browserGuard;
 
     private final WebSearchTools webSearchTools = new WebSearchTools();
     private final FileTools fileTools = new FileTools(() -> pathGuard);
@@ -95,15 +103,24 @@ public class ToolRegistry {
 
         boolean shouldAudit = shouldAudit(name);
         long start = System.nanoTime();
+        BrowserAuditMetadata auditMetadata = null;
 
         try {
             McpRegisteredTool mcpTool = mcpTools.get(name);
             if (mcpTool != null) {
-                String result = mcpTool.invoker().apply(argumentJson);
-                if (shouldAudit) {
-                    auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start)));
+                BrowserCheckResult browserCheck = checkBrowserTool(name, argumentJson, false);
+                auditMetadata = browserCheck.metadata();
+                if (browserCheck.blocked()) {
+                    throw new PolicyException(browserCheck.reason());
                 }
 
+                String result = mcpTool.invoker().apply(argumentJson);
+                if (browserGuard != null) {
+                    browserGuard.applyAfterExecution(name, argumentJson, result);
+                }
+                if (shouldAudit) {
+                    auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start), auditMetadata));
+                }
                 return result;
             }
 
@@ -115,18 +132,18 @@ public class ToolRegistry {
 
             String result = tool.executor().execute(argMap);
             if (shouldAudit) {
-                auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start)));
+                auditLog.record(AuditEntry.allow(name, argumentJson, elapsedMillis(start), auditMetadata));
             }
             return result;
         } catch (PolicyException e) {
             if (shouldAudit) {
-                auditLog.record(AuditEntry.denyByPolicy(name, argumentJson, e.getMessage(), elapsedMillis(start)));
+                auditLog.record(AuditEntry.denyByPolicy(name, argumentJson, e.getMessage(), elapsedMillis(start), auditMetadata));
             }
 
             return "🛡️ 策略拒绝: " + e.getMessage();
         } catch (Exception e) {
             if (shouldAudit) {
-                auditLog.record(AuditEntry.error(name, argumentJson, e.getMessage(), elapsedMillis(start)));
+                auditLog.record(AuditEntry.error(name, argumentJson, e.getMessage(), elapsedMillis(start), auditMetadata));
             }
 
             return "工具执行失败: " + e.getMessage();
@@ -208,6 +225,13 @@ public class ToolRegistry {
         } finally {
             executors.shutdownNow();
         }
+    }
+
+    protected BrowserCheckResult checkBrowserTool(String name, String argumentsJson, boolean previewOnly) {
+        if (browserGuard == null || !BrowserGuard.isChromeTool(name)) {
+            return BrowserCheckResult.allow(null);
+        }
+        return browserGuard.check(name, argumentsJson, !previewOnly);
     }
 
     public synchronized void registerMcpTool(McpToolDescription description, Function<String, String> invoker) {

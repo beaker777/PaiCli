@@ -151,6 +151,13 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.MCP_PROMPTS, trimmed.substring(13).trim());
         }
 
+        if (trimmed.equalsIgnoreCase("/browser")) {
+            return new ParsedCommand(CommandType.BROWSER, "status");
+        }
+
+        if (trimmed.regionMatches(true, 0, "/browser ", 0, 9)) {
+            return new ParsedCommand(CommandType.BROWSER, trimmed.substring(9).trim());
+        }
 
         if (trimmed.startsWith("/")) {
             return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);

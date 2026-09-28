@@ -81,4 +81,7 @@ public enum CommandType {
 
     // mcp prompt
     MCP_PROMPTS,
+
+    // 浏览器设置
+    BROWSER,
 }

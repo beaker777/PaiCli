@@ -15,7 +15,7 @@ import java.util.Map;
  */
 public record ApprovalRequest(String toolName, String arguments,
                               String dangerLevel, String riskDescription,
-                              String suggestion, String callerContext) {
+                              String suggestion, String callerContext, String sensitiveNotice) {
 
 
     private static final ObjectMapper mapper = new ObjectMapper();
@@ -29,9 +29,19 @@ public record ApprovalRequest(String toolName, String arguments,
     }
 
     public static ApprovalRequest of(String toolName, String arguments, String suggestion, String callerContext) {
-        return new ApprovalRequest(toolName, arguments,
-                ApprovalPolicy.getDangerLevel(toolName), ApprovalPolicy.getRiskDescription(toolName),
-                suggestion, callerContext);
+        return of(toolName, arguments, suggestion, callerContext, null);
+    }
+
+    public static ApprovalRequest of(String toolName, String arguments, String suggestion, String callerContext, String sensitiveNotice) {
+        return new ApprovalRequest(
+                toolName,
+                arguments,
+                ApprovalPolicy.getDangerLevel(toolName),
+                ApprovalPolicy.getRiskDescription(toolName),
+                suggestion,
+                callerContext,
+                sensitiveNotice
+        );
     }
 
     /**
@@ -54,6 +64,10 @@ public record ApprovalRequest(String toolName, String arguments,
         if (callerContext != null && !callerContext.isBlank()) {
             sb.append(formatBoxField("来源", callerContext)).append("\n");
         }
+        if (sensitiveNotice != null && !sensitiveNotice.isBlank()) {
+            sb.append(formatBoxField("敏感页面", sensitiveNotice)).append("\n");
+        }
+
         sb.append("├").append(border).append("┤\n");
         sb.append(formatBoxLine("参数:")).append("\n");
         for (String line : formatArgs(arguments)) {

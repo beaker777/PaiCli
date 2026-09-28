@@ -1,5 +1,7 @@
 package com.paicode.policy.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.paicode.browser.entity.BrowserAuditMetadata;
 import com.paicode.policy.service.audit.AuditLog;
 
 import java.time.Instant;
@@ -9,7 +11,9 @@ import java.time.Instant;
  * @Date 2026/9/25 01:20
  * @Description 审计条目
  */
-public record AuditEntry(String timestamp, String tool, String args, String outcome, String reason, String approver, long durationMs) {
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record AuditEntry(String timestamp, String tool, String args, String outcome, String reason,
+                         String approver, long durationMs, BrowserAuditMetadata metadata) {
 
     public static final String APPROVER_HITL = "hitl";
     public static final String APPROVER_POLICY = "policy";
@@ -23,26 +27,41 @@ public record AuditEntry(String timestamp, String tool, String args, String outc
 
     public static AuditEntry allow(String tool, String args, long durationMs) {
         return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
-                OUTCOME_ALLOW, null, APPROVER_NONE, durationMs);
+                OUTCOME_ALLOW, null, APPROVER_NONE, durationMs, null);
+    }
+
+    public static AuditEntry allow(String tool, String args, long durationMs, BrowserAuditMetadata metadata) {
+        return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
+                OUTCOME_ALLOW, null, APPROVER_NONE, durationMs, metadata);
     }
 
     public static AuditEntry allowByMention(String tool, String args, long durationMs) {
         return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
-                OUTCOME_ALLOW, null, APPROVER_MENTION, durationMs);
+                OUTCOME_ALLOW, null, APPROVER_MENTION, durationMs, null);
     }
 
     public static AuditEntry denyByHitl(String tool, String args, String reason, long durationMs) {
         return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
-                OUTCOME_DENY, reason, APPROVER_HITL, durationMs);
+                OUTCOME_DENY, reason, APPROVER_HITL, durationMs, null);
     }
 
     public static AuditEntry denyByPolicy(String tool, String args, String reason, long durationMs) {
         return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
-                OUTCOME_DENY, reason, APPROVER_POLICY, durationMs);
+                OUTCOME_DENY, reason, APPROVER_POLICY, durationMs, null);
+    }
+
+    public static AuditEntry denyByPolicy(String tool, String args, String reason, long durationMs, BrowserAuditMetadata metadata) {
+        return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
+                OUTCOME_DENY, reason, APPROVER_POLICY, durationMs, metadata);
     }
 
     public static AuditEntry error(String tool, String args, String reason, long durationMs) {
         return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
-                OUTCOME_ERROR, reason, APPROVER_NONE, durationMs);
+                OUTCOME_ERROR, reason, APPROVER_NONE, durationMs, null);
+    }
+
+    public static AuditEntry error(String tool, String args, String reason, long durationMs, BrowserAuditMetadata metadata) {
+        return new AuditEntry(Instant.now().toString(), tool, AuditLog.truncate(args),
+                OUTCOME_ERROR, reason, APPROVER_NONE, durationMs, metadata);
     }
 }
