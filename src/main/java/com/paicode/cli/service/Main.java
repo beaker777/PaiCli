@@ -8,12 +8,15 @@ import com.paicode.browser.entity.BrowserAuditMetadata;
 import com.paicode.browser.entity.BrowserSession;
 import com.paicode.browser.entity.ProbeResult;
 import com.paicode.browser.service.connect.BrowserConnectivityCheck;
+import com.paicode.browser.service.connect.BrowserConnector;
 import com.paicode.browser.service.guard.BrowserGuard;
 import com.paicode.browser.service.guard.SensitivePagePolicy;
 import com.paicode.cli.entity.*;
 import com.paicode.cli.constant.EscapeSequenceType;
 import com.paicode.cli.constant.CommandType;
 import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
+import com.paicode.cli.service.command.CliCommandParser;
+import com.paicode.cli.service.complete.PaiCodeCompleter;
 import com.paicode.config.PaiCodeConfig;
 import com.paicode.hitl.entity.ApprovalPolicy;
 import com.paicode.hitl.service.HitlToolRegistry;
@@ -27,7 +30,6 @@ import com.paicode.mcp.service.mention.AtMentionCompleter;
 import com.paicode.mcp.service.mention.AtMentionExpander;
 import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.PlanReviewHandler;
-import com.paicode.plan.entity.Task;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.rag.service.manage.CodeIndex;
 import com.paicode.rag.service.retrieve.CodeRetriever;
@@ -38,6 +40,7 @@ import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.retrieve.SearchResultFormatter;
 import com.paicode.runtime.CancellationContext;
 import com.paicode.runtime.CancellationToken;
+import org.jline.keymap.KeyMap;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
@@ -53,16 +56,18 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.*;
 
+import static com.paicode.cli.entity.SlashCommandHint.slashCommandHints;
+
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
  * @Description PaiCode v12.0 - MCP Enabled Agent CLI
  * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model,
- * 支持 MCP, MCP resource, Chrome Dev MCP, CDP Session Reuse
+ * 支持 MCP, MCP resource, Chrome Dev MCP, CDP Session Reuse, Auto Connect
  */
 public class Main {
 
-    private static final String VERSION = "12.0.0";
+    private static final String VERSION = "13.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -121,6 +126,30 @@ public class Main {
 
             // 创建 MCP 管理器
             McpServerManager mcpServerManager = new McpServerManager(hitlToolRegistry, Path.of("."));
+
+            // 设置浏览器工具
+            hitlToolRegistry.setBrowserConnector(new BrowserConnector() {
+                @Override
+                public String status() {
+                    return handleBrowserCommand("status", browserSession, browserConnectivityCheck,
+                            mcpServerManager, hitlToolRegistry, hitlHandler);
+                }
+
+                @Override
+                public String connectDefault() {
+                    return handleBrowserCommand("connect", browserSession, browserConnectivityCheck,
+                            mcpServerManager, hitlToolRegistry, hitlHandler);
+                }
+
+                @Override
+                public String disconnect() {
+                    return handleBrowserCommand("disconnect", browserSession, browserConnectivityCheck,
+                            mcpServerManager, hitlToolRegistry, hitlHandler);
+                }
+            });
+
+
+            // 启动 MCP Servers
             try {
                 McpConfigBootstrapResult bootstrapResult = ensureDefaultMcpConfig(Path.of(System.getProperty("user.home")));
                 if (!bootstrapResult.message().isBlank()) {
@@ -144,9 +173,12 @@ public class Main {
             // 创建 lineReader
             LineReader lineReader = LineReaderBuilder.builder()
                     .terminal(terminal)
-                    .completer(new AtMentionCompleter(mcpServerManager::resourceCandidates))
+                    .completer(new PaiCodeCompleter(mcpServerManager::resourceCandidates))
                     .build();
             lineReader.option(LineReader.Option.BRACKETED_PASTE, true);
+            lineReader.option(LineReader.Option.AUTO_LIST, true);
+            lineReader.option(LineReader.Option.AUTO_MENU, true);
+
             AtMentionExpander mentionExpander = new AtMentionExpander(mcpServerManager);
 
             // 默认使用 ReAct 模式
@@ -195,7 +227,7 @@ public class Main {
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         System.out.println("未知命令: " + command.payload());
-                        System.out.println("可用命令: /model, /plan, /team, /browser, /hitl, /mcp, /policy, /audit, /clear, /memory, /memory clear, /save, /index, /search, /graph, /context, /exit\n");
+
                         continue;
                     }
                     case EXIT -> {
@@ -283,6 +315,8 @@ public class Main {
                         if (command.payload() == null || command.payload().isBlank()) {
                             nextTaskUseTeamMode = true;
                             System.out.println("下一条任务将使用 Multi-Agent 协作模式 (规划者 + 执行者 + 检查者). 输入任务前按 ESC 可取消, 执行完成后自动回到默认 ReAct.\n");
+                            printSlashCommandHelp();
+                            continue;
                         }
 
                         input = command.payload();
@@ -548,8 +582,11 @@ public class Main {
         return switch (subCommand) {
             case "status" -> browserStatus(browserSession, connectivityCheck, mcpServerManager);
             case "connect" -> {
-                int port = parseBrowserPort(parts.length >= 2 ? parts[1] : null);
-                yield browserConnect(port, browserSession, connectivityCheck, mcpServerManager, hitlHandler);
+                if (parts.length >= 2) {
+                    int port = parseBrowserPort(parts[1]);
+                    yield browserConnectByPort(port, browserSession, connectivityCheck, mcpServerManager, hitlHandler);
+                }
+                yield browserAutoConnect(browserSession, mcpServerManager, hitlHandler);
             }
             case "disconnect" -> browserDisconnect(browserSession, mcpServerManager, hitlHandler);
             case "tabs" -> browserTabs(browserSession, registry);
@@ -585,13 +622,36 @@ public class Main {
                 """.formatted(mode, serverStatus, probe.ok() ? "✅ " + probe.browserUrl() : "⚠️ " + probe.message()).trim();
     }
 
-    private static String browserConnect(int port,
+    private static String browserAutoConnect(BrowserSession browserSession,
+                                             McpServerManager mcpServerManager,
+                                             TerminalHitlHandler hitlHandler) {
+        McpServer server = mcpServerManager.server("chrome-devtools");
+        if (server == null) {
+            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.paicli/mcp.json";
+        }
+
+        List<String> oldArgs = List.copyOf(server.config().getArgs());
+        List<String> autoConnectArgs = List.of("-y", "chrome-devtools-mcp@latest", "--autoConnect");
+        String result = mcpServerManager.restartWithArgs("chrome-devtools", autoConnectArgs);
+        McpServer restarted = mcpServerManager.server("chrome-devtools");
+        if (restarted != null && restarted.status() == McpServerStatus.READY) {
+            browserSession.switchToShared("autoConnect");
+            hitlHandler.clearApprovedAllForServer("chrome-devtools");
+            return "🔄 已用 --autoConnect 连接 Chrome（需已在 chrome://inspect/#remote-debugging 允许远程调试）\n" + result;
+        }
+
+        mcpServerManager.restartWithArgs("chrome-devtools", oldArgs);
+        return "❌ autoConnect 连接失败，已回滚 chrome-devtools 启动参数：\n" + result
+                + "\n\n请确认 Chrome 144+ 已打开 chrome://inspect/#remote-debugging，并勾选 Allow remote debugging for this browser instance。";
+    }
+
+    private static String browserConnectByPort(int port,
                                          BrowserSession browserSession,
                                          BrowserConnectivityCheck connectivityCheck,
                                          McpServerManager mcpServerManager,
                                          TerminalHitlHandler hitlHandler) {
         if (port < 1024 || port > 65535) {
-            return "❌ /browser connect 端口必须在 1024-65535 之间，默认可直接使用 /browser connect（9222）。";
+            return "❌ /browser connect 端口必须在 1024-65535 之间。默认 /browser connect 使用 --autoConnect；旧式 CDP 端口连接可用 /browser connect 9222。";
         }
         ProbeResult probe = connectivityCheck.probe(port);
         if (!probe.ok()) {
@@ -1152,34 +1212,45 @@ public class Main {
     private static List<String> startupHints() {
         return List.of(
                 "输入你的问题或任务",
-                "输入 '/model' 查看当前模型，'/model glm' 或 '/model deepseek' 切换模型",
-                "输入 '/plan' 后，下一条任务使用 Plan-and-Execute 模式",
-                "输入 '/plan 任务内容' 直接用计划模式执行这条任务",
-                "输入 '/team' 后，下一条任务使用 Multi-Agent 协作模式",
-                "输入 '/team 任务内容' 直接用多 Agent 协作执行这条任务",
-                "计划生成后可直接执行、补充要求重规划，或取消",
+                "输入 '/' 查看命令",
+                "输入 '@server:protocol://path' 可显式引用 MCP resource",
                 "任务运行中按 ESC 取消当前任务",
-                "输入 '/hitl on' 启用危险操作人工审批（HITL）",
-                "输入 '/hitl off' 关闭 HITL 审批",
-                "输入 '/mcp' 查看 MCP server，'/mcp restart|logs|disable|enable <name>' 管理 MCP",
-                "输入 '/mcp resources <name>' 查看 MCP resources，'/mcp prompts <name>' 查看 prompts",
-                "输入 '/mcp restart chrome-devtools' 重启浏览器 MCP server",
-                "输入 '/browser connect' 复用带登录态的调试 Chrome（需先用 9222 调试端口启动 Chrome）",
-                "输入 '/browser status|tabs|disconnect' 查看或切回 isolated 浏览器模式",
-                "在普通任务里输入 '@server:protocol://path' 可显式引用 MCP resource",
-                "输入 '/policy' 查看安全策略状态（路径围栏 / 命令黑名单 / 资源上限）",
-                "输入 '/audit [N]' 查看最近 N 条危险工具审计记录（默认 10）",
-                "输入 '/index [路径]' 为代码库建立向量索引",
-                "输入 '/search <查询>' 语义检索代码",
-                "输入 '/graph <类名>' 查看代码关系图谱",
-                "默认模式是 ReAct",
-                "输入 '/clear' 清空对话历史",
-                "输入 '/context' 查看上下文和记忆状态",
-                "输入 '/memory' 查看记忆状态",
-                "输入 '/memory clear' 清空长期记忆",
-                "输入 '/save 事实内容' 手动保存关键事实",
-                "输入 '/exit' 或 '/quit' 退出"
+                "默认模式是 ReAct"
         );
+    }
+
+    private static void configureSlashCommandHint(LineReader lineReader) {
+        if (lineReader == null) {
+            return;
+        }
+
+        lineReader.getWidgets().put("paicode-slash-command-hint", () -> {
+            boolean atPromptStart = lineReader.getBuffer().length() == 0;
+            lineReader.getBuffer().write("/");
+            if (atPromptStart) {
+                lineReader.callWidget(LineReader.LIST_CHOICES);
+            }
+            return true;
+        });
+        Reference slashHint = new Reference("paicode-slash-command-hint");
+        bindSlashWidget(lineReader, LineReader.MAIN, slashHint);
+        bindSlashWidget(lineReader, LineReader.EMACS, slashHint);
+        bindSlashWidget(lineReader, LineReader.VIINS, slashHint);
+    }
+
+    private static void bindSlashWidget(LineReader lineReader, String keyMapName, Reference slashHint) {
+        KeyMap<Binding> keyMap = lineReader.getKeyMaps().get(keyMapName);
+        if (keyMap != null) {
+            keyMap.bind(slashHint, "/");
+        }
+    }
+
+    private static void printSlashCommandHelp() {
+        System.out.println("可用命令：");
+        for (SlashCommandHint hint : slashCommandHints()) {
+            System.out.println("   " + hint.display() + " - " + hint.description());
+        }
+        System.out.println();
     }
 
     private static void printPolicyStatus(Agent reactAgent) {

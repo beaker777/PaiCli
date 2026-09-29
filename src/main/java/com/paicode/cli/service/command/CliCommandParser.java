@@ -1,4 +1,4 @@
-package com.paicode.cli.service;
+package com.paicode.cli.service.command;
 
 import com.paicode.cli.entity.ParsedCommand;
 import com.paicode.cli.constant.CommandType;

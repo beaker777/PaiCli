@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.browser.entity.BrowserAuditMetadata;
 import com.paicode.browser.entity.BrowserCheckResult;
+import com.paicode.browser.service.connect.BrowserConnector;
 import com.paicode.browser.service.guard.BrowserGuard;
 import com.paicode.context.ContextProfile;
 import com.paicode.llm.entity.Tool;
@@ -20,6 +21,7 @@ import lombok.Setter;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -44,12 +46,17 @@ public class ToolRegistry {
     // 上下文管理策略
     private ContextProfile contextProfile = ContextProfile.from(null);
 
-    // 浏览器安全管理
+    // 浏览器管理
     private BrowserGuard browserGuard;
+    private BrowserConnector browserConnector;
+
+    // 记忆存储
+    private Consumer<String> memorySaver;
 
     private final WebSearchTools webSearchTools = new WebSearchTools();
     private final FileTools fileTools = new FileTools(() -> pathGuard);
     private final CodeTools codeTools = new CodeTools(() -> pathGuard);
+    private final BrowserTools browserTools = new BrowserTools(() -> browserConnector);
 
     private final long commandTimeoutSeconds;
     private final long toolBatchTimeoutSeconds;
@@ -76,6 +83,8 @@ public class ToolRegistry {
         register(codeTools.create());
         register(RagTools.create(projectPath));
         register(webSearchTools.create());
+        register(browserTools.create());
+        register(MemoryTools.create(memorySaver));
     }
 
     private void register(List<ToolDefinition> toolList) {
