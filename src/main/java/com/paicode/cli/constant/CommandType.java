@@ -84,4 +84,19 @@ public enum CommandType {
 
     // 浏览器设置
     BROWSER,
+
+    // Skill 列表
+    SKILL_LIST,
+
+    // Skill.md 内容展示
+    SKILL_SHOW,
+
+    // Skill 开启
+    SKILL_ON,
+
+    // Skill 禁用
+    SKILL_OFF,
+
+    // 重新加载 Skill
+    SKILL_RELOAD
 }

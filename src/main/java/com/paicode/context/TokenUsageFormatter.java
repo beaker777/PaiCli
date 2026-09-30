@@ -19,9 +19,8 @@ public class TokenUsageFormatter {
         int total = Math.max(0, inputTokens) + Math.max(0, outputTokens);
         String cost = estimatedCostCny(llmClient, inputTokens, outputTokens, cachedInputTokens);
         return AnsiStyle.subtle(String.format(Locale.ROOT,
-                "📊 Token: 已用 %d / %d (window %d, cached: %d, 估算 %s) | 输入 %d / 输出 %d | ⏱ %.1fs",
+                "📊 Token: 已用 %d / %d (cached: %d, 估算 %s) | 输入 %d / 输出 %d | ⏱ %.1fs",
                 total,
-                profile.agentTokenBudget(),
                 profile.maxContextWindow(),
                 Math.max(0, cachedInputTokens),
                 cost,

@@ -16,7 +16,7 @@ import java.util.Locale;
  * @Description Agent 退出循环的预算, 将何时退出循环的主导权交给 AI 自己
  *
  * 本类只承担三种职责, 避免无限的消耗 Token:
- * 1. Token 预算: 当超过 Token 预算后强制收尾.
+ * 1. Token 预算: 当超过 Token 预算后强制收尾 (默认无限预算).
  * 2. 停滞检测: 当连续多次调用完全相同的工具, 使用完全一致的参数时强制收尾
  * 3. 硬轮数检测: 累计迭代次数超过 hardMaxIterations 强制停止.
  */
@@ -56,9 +56,9 @@ public class AgentBudget {
     }
 
     public static AgentBudget fromLlmClient(LlmClient llmClient) {
-        ContextProfile profile = ContextProfile.from(llmClient);
+        // token 预算不再参考模型, 模型预算仅用于 token stats 的提示
         return new AgentBudget(
-                readIntProperty("paicode.react.token.budget", profile.agentTokenBudget()),
+                readIntProperty("paicode.react.token.budget", Integer.MAX_VALUE),
                 readIntProperty("paicode.react.stagnation.window", DEFAULT_STAGNATION_WINDOW),
                 readIntProperty("paicode.react.hard.max.iterations", DEFAULT_HARD_MAX_ITERATIONS)
         );

@@ -6,6 +6,7 @@ import com.paicode.agent.MultiAgent.entity.AgentMessage;
 import com.paicode.agent.MultiAgent.constant.AgentRole;
 import com.paicode.agent.constant.ExitReason;
 import com.paicode.agent.service.AgentBudget;
+import com.paicode.context.ContextProfile;
 import com.paicode.context.TokenUsageFormatter;
 import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
@@ -13,11 +14,16 @@ import com.paicode.llm.entity.ToolCall;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.SubAgentStreamRenderer;
+import com.paicode.memory.service.compress.ConversationHistoryCompactor;
+import com.paicode.skill.service.buffer.SkillContextBuffer;
+import com.paicode.skill.service.manage.SkillRegistry;
+import com.paicode.skill.service.parser.SkillIndexFormatter;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
 import lombok.Getter;
+import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +40,7 @@ import java.util.function.Supplier;
  * @Description 子代理
  */
 @Getter
+@Setter
 public class SubAgent {
 
     private static final Logger log = LoggerFactory.getLogger(SubAgent.class);
@@ -42,9 +49,14 @@ public class SubAgent {
     private final String name;
     private final AgentRole role;
     private final LlmClient llmClient;
-    private final ToolRegistry toolRegistry;
-    private final List<Message> conversationHistory;
     private Supplier<String> externalContextSupplier = () -> "";
+
+    private final ToolRegistry toolRegistry;
+    private SkillRegistry skillRegistry;
+    private SkillContextBuffer skillContextBuffer;
+
+    private final List<Message> conversationHistory;
+    private final ConversationHistoryCompactor historyCompactor;
 
     // 各角色的系统提示词
     private static final String PLANNER_PROMPT = """
@@ -149,6 +161,7 @@ public class SubAgent {
         this.toolRegistry = toolRegistry;
 
         this.conversationHistory = new ArrayList<>();
+        this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.conversationHistory.add(Message.system(getSystemPrompt()));
     }
 
@@ -166,10 +179,53 @@ public class SubAgent {
             case WORKER -> WORKER_PROMPT;
             case REVIEWER -> REVIEWER_PROMPT;
         };
+        StringBuilder sb = new StringBuilder(base);
 
         String external = buildExternalContext();
-        return external.isEmpty() ? base : base + "\n" + external;
+        if (!external.isBlank()) {
+            sb.append("\n").append(external);
+        }
+        String skillIndex = buildSkillIndex();
+        if (!skillIndex.isBlank()) {
+            sb.append("\n").append(skillIndex);
+        }
+        return sb.toString();
     }
+
+    private void maybeCompactHistory(PrintStream out) {
+        if (historyCompactor == null) return;
+        ContextProfile profile = toolRegistry == null ? null : toolRegistry.getContextProfile();
+        if (profile == null) return;
+
+        try {
+            boolean compacted = historyCompactor.compactIfNeeded(conversationHistory, profile.compressionTriggerTokens());
+            if (compacted && out != null) {
+                out.println("📦 [" + name + "] 上下文接近窗口上限，已把早期对话压缩为摘要后继续。");
+            }
+        } catch (Exception e) {
+            log.warn("[{}] conversationHistory compaction failed", name, e);
+        }
+    }
+
+    private String buildSkillIndex() {
+        if (skillRegistry == null) return "";
+        try {
+            return SkillIndexFormatter.format(skillRegistry.enabledSkills());
+        } catch (Exception e) {
+            log.warn("[{}] failed to build skill index", name, e);
+            return "";
+        }
+    }
+
+    private String prependSkillBodies(String content) {
+        if (skillContextBuffer == null || skillContextBuffer.isEmpty()) {
+            return content;
+        }
+        String drained = skillContextBuffer.drain();
+        if (drained.isEmpty()) return content;
+        return drained + "\n" + content;
+    }
+
 
     private void refreshSystemPrompt() {
         if (!conversationHistory.isEmpty()) {
@@ -205,7 +261,7 @@ public class SubAgent {
     public AgentMessage execute(AgentMessage task, PrintStream out) {
         log.info("[{}] executing task from {}: type={}", name, task.fromAgent(), task.type());
         refreshSystemPrompt();
-        String taskContent = task.content();
+        String taskContent = prependSkillBodies(task.content());
 
         // 将 task 注入历史
         conversationHistory.add(Message.user(taskContent));
@@ -229,6 +285,8 @@ public class SubAgent {
             }
 
             budget.beginIteration();
+
+            maybeCompactHistory(out);
             try {
                 ChatResponse response = llmClient.chat(
                         conversationHistory,

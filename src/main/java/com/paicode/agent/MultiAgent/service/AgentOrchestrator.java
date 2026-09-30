@@ -11,6 +11,8 @@ import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.memory.service.manager.MemoryManager;
 import com.paicode.runtime.CancellationContext;
+import com.paicode.skill.service.buffer.SkillContextBuffer;
+import com.paicode.skill.service.manage.SkillRegistry;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
 import org.slf4j.Logger;
@@ -73,6 +75,21 @@ public class AgentOrchestrator {
         planner.setExternalContextSupplier(this.externalContextSupplier);
         workers.forEach(worker -> worker.setExternalContextSupplier(this.externalContextSupplier));
         reviewer.setExternalContextSupplier(this.externalContextSupplier);
+    }
+
+    /**
+     * 将 skill 部署给所有 subAgent, 共享同一 SkillRegistry
+     * 目前共享同一 buffer, 暂未启用不同角色之间独立 buffer
+     */
+    public void setSkillSystem(SkillRegistry skillRegistry, SkillContextBuffer skillContextBuffer) {
+        planner.setSkillRegistry(skillRegistry);
+        planner.setSkillContextBuffer(skillContextBuffer);
+        for (SubAgent worker : workers) {
+            worker.setSkillRegistry(skillRegistry);
+            worker.setSkillContextBuffer(skillContextBuffer);
+        }
+        reviewer.setSkillRegistry(skillRegistry);
+        reviewer.setSkillContextBuffer(skillContextBuffer);
     }
 
     /**

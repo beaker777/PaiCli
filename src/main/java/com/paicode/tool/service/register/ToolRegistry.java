@@ -10,6 +10,8 @@ import com.paicode.context.ContextProfile;
 import com.paicode.llm.entity.Tool;
 import com.paicode.mcp.entity.McpToolDescription;
 import com.paicode.runtime.CancellationContext;
+import com.paicode.skill.service.buffer.SkillContextBuffer;
+import com.paicode.skill.service.manage.SkillRegistry;
 import com.paicode.tool.entity.*;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.policy.exception.PolicyException;
@@ -53,6 +55,10 @@ public class ToolRegistry {
     // 记忆存储
     private Consumer<String> memorySaver;
 
+    // skill 注册
+    private SkillRegistry skillRegistry;
+    private SkillContextBuffer skillContextBuffer;
+
     private final WebSearchTools webSearchTools = new WebSearchTools();
     private final FileTools fileTools = new FileTools(() -> pathGuard);
     private final CodeTools codeTools = new CodeTools(() -> pathGuard);
@@ -85,6 +91,7 @@ public class ToolRegistry {
         register(webSearchTools.create());
         register(browserTools.create());
         register(MemoryTools.create(memorySaver));
+        register(SkillTools.create(skillRegistry, skillContextBuffer));
     }
 
     private void register(List<ToolDefinition> toolList) {

@@ -16,6 +16,7 @@ import com.paicode.cli.constant.EscapeSequenceType;
 import com.paicode.cli.constant.CommandType;
 import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
 import com.paicode.cli.service.command.CliCommandParser;
+import com.paicode.cli.service.command.SkillCommandHandler;
 import com.paicode.cli.service.complete.PaiCodeCompleter;
 import com.paicode.config.PaiCodeConfig;
 import com.paicode.hitl.entity.ApprovalPolicy;
@@ -40,6 +41,10 @@ import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.retrieve.SearchResultFormatter;
 import com.paicode.runtime.CancellationContext;
 import com.paicode.runtime.CancellationToken;
+import com.paicode.skill.service.buffer.SkillContextBuffer;
+import com.paicode.skill.service.extract.SkillBuiltinExtractor;
+import com.paicode.skill.service.manage.SkillRegistry;
+import com.paicode.skill.service.manage.SkillStateStore;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
@@ -63,11 +68,11 @@ import static com.paicode.cli.entity.SlashCommandHint.slashCommandHints;
  * @Date 2026/9/9 19:56
  * @Description PaiCode v12.0 - MCP Enabled Agent CLI
  * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model,
- * 支持 MCP, MCP resource, Chrome Dev MCP, CDP Session Reuse, Auto Connect
+ * 支持 MCP, MCP resource, Chrome Dev MCP, CDP Session Reuse, Auto Connect Browser, Skill
  */
 public class Main {
 
-    private static final String VERSION = "13.0.0";
+    private static final String VERSION = "14.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -119,7 +124,7 @@ public class Main {
             TerminalHitlHandler hitlHandler = new TerminalHitlHandler(false);
             HitlToolRegistry hitlToolRegistry = new HitlToolRegistry(hitlHandler);
 
-            // 浏览器设置
+            // 浏览器会话复用设置
             BrowserSession browserSession = new BrowserSession();
             BrowserConnectivityCheck browserConnectivityCheck = new BrowserConnectivityCheck();
             hitlToolRegistry.setBrowserGuard(new BrowserGuard(browserSession, new SensitivePagePolicy()));
@@ -127,7 +132,7 @@ public class Main {
             // 创建 MCP 管理器
             McpServerManager mcpServerManager = new McpServerManager(hitlToolRegistry, Path.of("."));
 
-            // 设置浏览器工具
+            // 设置浏览器自动连接工具
             hitlToolRegistry.setBrowserConnector(new BrowserConnector() {
                 @Override
                 public String status() {
@@ -178,12 +183,33 @@ public class Main {
             lineReader.option(LineReader.Option.BRACKETED_PASTE, true);
             lineReader.option(LineReader.Option.AUTO_LIST, true);
             lineReader.option(LineReader.Option.AUTO_MENU, true);
-
+            configureSlashCommandHint(lineReader);
             AtMentionExpander mentionExpander = new AtMentionExpander(mcpServerManager);
+
+            // Skill 系统初始化
+            Path home = Path.of(System.getProperty("user.home"));
+            Path skillsCacheDir = home.resolve(".paicode/skills-cache");
+            Path userSkillsDir = home.resolve(".paicode/skills");
+            Path projectSkillsDir = Path.of(".paicode/skills").toAbsolutePath();
+            try {
+                new SkillBuiltinExtractor(skillsCacheDir).extractAll();
+            } catch (Exception e) {
+                System.err.println("⚠️ 内置 skill 解压失败: " + e.getMessage());
+            }
+            SkillStateStore skillStateStore = new SkillStateStore(home.resolve("/paicode/skill.json"));
+            SkillRegistry skillRegistry = new SkillRegistry(skillsCacheDir, userSkillsDir, projectSkillsDir, skillStateStore);
+            skillRegistry.reload();
+
+            SkillContextBuffer skillContextBuffer = new SkillContextBuffer();
+            hitlToolRegistry.setSkillRegistry(skillRegistry);
+            hitlToolRegistry.setSkillContextBuffer(skillContextBuffer);
+            System.out.println(SkillCommandHandler.startupSummary(skillRegistry));
 
             // 默认使用 ReAct 模式
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+            reactAgent.setSkillRegistry(skillRegistry);
+            reactAgent.setSkillContextBuffer(skillContextBuffer);
             System.out.println("使用 ReAct 模式\n");
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
@@ -379,6 +405,29 @@ public class Main {
                         printMcpCommandResult(mcpServerManager.prompts(command.payload()));
                         continue;
                     }
+                    case SKILL_LIST -> {
+                        System.out.println(SkillCommandHandler.list(skillRegistry));
+                        continue;
+                    }
+                    case SKILL_SHOW -> {
+                        System.out.println(SkillCommandHandler.show(skillRegistry, command.payload()));
+                        continue;
+                    }
+                    case SKILL_ON -> {
+                        System.out.println(SkillCommandHandler.enable(skillRegistry, skillStateStore, command.payload()));
+                        continue;
+                    }
+                    case SKILL_OFF -> {
+                        System.out.println(SkillCommandHandler.disable(skillRegistry, skillStateStore, command.payload()));
+                        continue;
+                    }
+                    case SKILL_RELOAD -> {
+                        skillRegistry.reload();
+                        System.out.println("🔄 已重新扫描 skill 目录");
+                        System.out.println(SkillCommandHandler.startupSummary(skillRegistry));
+                        System.out.println("✅ 下一轮 LLM 调用生效");
+                        continue;
+                    }
                     case BROWSER -> {
                         printMcpCommandResult(handleBrowserCommand(
                                 command.payload(),
@@ -480,6 +529,8 @@ public class Main {
                     runTask = () -> {
                         PlanAndExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader);
                         planAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+                        planAgent.setSkillRegistry(skillRegistry);
+                        planAgent.setSkillContextBuffer(skillContextBuffer);
                         return planAgent.run(taskInput);
                     };
                 } else if (nextTaskUseTeamMode || command.type() == CommandType.SWITCH_TEAM) {
@@ -487,6 +538,7 @@ public class Main {
                     runTask = () -> {
                         AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent);
                         orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
+                        orchestrator.setSkillSystem(skillRegistry, skillContextBuffer);
                         return orchestrator.run(taskInput);
                     };
                 } else {
@@ -1195,7 +1247,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      Session-Aware Browser Agent CLI %-17s║%n", "v" + VERSION);
+        System.out.printf("║      Skill-Driven Agent CLI %-26s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -1214,6 +1266,7 @@ public class Main {
                 "输入你的问题或任务",
                 "输入 '/' 查看命令",
                 "输入 '@server:protocol://path' 可显式引用 MCP resource",
+                "输入 '/skill list' 查看可用 skill；任务匹配时 LLM 会自动 load_skill 加载完整指引",
                 "任务运行中按 ESC 取消当前任务",
                 "默认模式是 ReAct"
         );

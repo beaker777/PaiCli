@@ -10,13 +10,16 @@ import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
 import com.paicode.llm.service.model.LlmClient;
-import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.AgentStreamListener;
 import com.paicode.memory.entity.MemoryEntry;
+import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.memory.service.compress.TokenBudget;
 import com.paicode.memory.service.hint.ExplicitMemoryHints;
 import com.paicode.memory.service.manager.MemoryManager;
 import com.paicode.runtime.CancellationContext;
+import com.paicode.skill.service.buffer.SkillContextBuffer;
+import com.paicode.skill.service.manage.SkillRegistry;
+import com.paicode.skill.service.parser.SkillIndexFormatter;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
@@ -46,9 +49,15 @@ public class Agent {
     private final static Logger log = LoggerFactory.getLogger(Agent.class);
 
     private LlmClient llmClient;
+
     private final ToolRegistry toolRegistry;
+    private SkillRegistry skillRegistry;
+    private SkillContextBuffer skillContextBuffer;
+
     private final List<Message> conversationHistory;
+    private final ConversationHistoryCompactor historyCompactor;
     private final MemoryManager memoryManager;
+
     private Supplier<String> externalContextSupplier = () -> "";
 
     // 系统提示词
@@ -123,6 +132,7 @@ public class Agent {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         conversationHistory = new ArrayList<>();
+        historyCompactor = new ConversationHistoryCompactor(llmClient);
         memoryManager = new MemoryManager(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setMemorySaver(memoryManager::storeFact);
@@ -136,7 +146,7 @@ public class Agent {
 
         // 存入短期记忆
         memoryManager.addUserMessage(userInput);
-        stortExplicitBrowserMemoryHint(userInput);
+        storeExplicitBrowserMemoryHint(userInput);
 
         // 检索相关长期记忆, 注入到 system prompt
         ContextProfile contextProfile = memoryManager.getContextProfile();
@@ -144,9 +154,10 @@ public class Agent {
         updateSystemPromptWithMemory(memoryContext);
 
         // 将用户输入添加到历史
-        AgentStreamListener streamListener = new AgentStreamListener();
-        conversationHistory.add(Message.user(userInput));
+        String userMessage = prependSkillBodies(userInput);
+        conversationHistory.add(Message.user(userMessage));
         StringBuilder reasoningTranscript = new StringBuilder();
+        AgentStreamListener streamListener = new AgentStreamListener();
 
         long startNanos = System.nanoTime();
         AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
@@ -157,6 +168,8 @@ public class Agent {
                 return "⏹️ 已取消当前任务。";
             }
 
+            // 判断是否需要压缩对话
+            maybeCompactHistory();
             ExitReason exitReason = budget.check();
             if (exitReason != ExitReason.WITHIN_BUDGET) {
                 String statsLine = formatTokenStats(budget, startNanos);
@@ -260,17 +273,31 @@ public class Agent {
         return results;
     }
 
-    // 清空历史 (保留系统提示词), 不影响长期记忆
-    public void clearHistory() {
-        Message systemPrompt = conversationHistory.get(0);
-        conversationHistory.clear();
-        conversationHistory.add(systemPrompt);
+    private String prependSkillBodies(String userInput) {
+        if (skillContextBuffer == null || skillContextBuffer.isEmpty()) {
+            return userInput;
+        }
 
-        // 清空短期记忆
-        memoryManager.clearShortTerm();
+        String drained = skillContextBuffer.drain();
+        if (drained.isEmpty()) return userInput;
+        return drained + "\n用户输入：\n" + userInput;
     }
 
-    private void stortExplicitBrowserMemoryHint(String userInput) {
+    private void maybeCompactHistory() {
+        if (historyCompactor == null) return;
+
+        int trigger = memoryManager.getContextProfile().compressionTriggerTokens();
+        try {
+            boolean compacted = historyCompactor.compactIfNeeded(conversationHistory, trigger);
+            if (compacted) {
+                System.out.println("📦 上下文接近窗口上限，已把早期对话压缩为摘要后继续。");
+            }
+        } catch (Exception e) {
+            log.warn("conversationHistory compaction failed", e);
+        }
+    }
+
+    private void storeExplicitBrowserMemoryHint(String userInput) {
         List<String> recentTexts = conversationHistory.stream()
                 .map(Message::content)
                 .filter(content -> content != null && !content.isBlank())
@@ -291,18 +318,36 @@ public class Agent {
      */
     private void updateSystemPromptWithMemory(String memoryContext) {
         String externalContext = buildExternalContext();
-        if ((memoryContext == null || memoryContext.isBlank()) && externalContext.isBlank()) {
-            // 没有记忆的时候重置回默认的 system prompt, 避免上下文污染
+        String skillIndex = buildSkillIndex();
+
+        boolean hasMemory = memoryContext != null && !memoryContext.isEmpty();
+        boolean hasExternal = !externalContext.isEmpty();
+        boolean hasSkill = !skillIndex.isEmpty();
+        if (!hasMemory && !hasExternal && !hasSkill) {
+            // 恢复原始 system prompt
             conversationHistory.set(0, Message.system(SYSTEM_PROMPT));
-        } else {
-            StringBuilder enrichedPrompt = new StringBuilder(SYSTEM_PROMPT);
-            if (memoryContext != null && !memoryContext.isBlank()) {
-                enrichedPrompt.append("\n").append(memoryContext);
-            }
-            if (!externalContext.isEmpty()) {
-                enrichedPrompt.append("\n").append(externalContext);
-            }
-            conversationHistory.set(0, Message.system(enrichedPrompt.toString()));
+            return;
+        }
+        StringBuilder enrichedPrompt = new StringBuilder(SYSTEM_PROMPT);
+        if (hasMemory) {
+            enrichedPrompt.append("\n").append(memoryContext);
+        }
+        if (hasExternal) {
+            enrichedPrompt.append("\n").append(externalContext);
+        }
+        if (hasSkill) {
+            enrichedPrompt.append("\n").append(skillIndex);
+        }
+        conversationHistory.set(0, Message.system(enrichedPrompt.toString()));
+    }
+
+    private String buildSkillIndex() {
+        if (skillRegistry == null) return "";
+        try {
+            return SkillIndexFormatter.format(skillRegistry.enabledSkills());
+        } catch (Exception e) {
+            log.warn("Failed to build skill index", e);
+            return "";
         }
     }
 
@@ -529,9 +574,19 @@ public class Agent {
         return String.valueOf(tokens);
     }
 
+    // 清空历史 (保留系统提示词), 不影响长期记忆
+    public void clearHistory() {
+        Message systemPrompt = conversationHistory.get(0);
+        conversationHistory.clear();
+        conversationHistory.add(systemPrompt);
+
+        // 清空短期记忆
+        memoryManager.clearShortTerm();
+    }
 
     public void setLlmClient(LlmClient llmClient) {
         this.llmClient = llmClient;
+        this.historyCompactor.setLlmClient(llmClient);
         this.memoryManager.setLlmClient(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
     }

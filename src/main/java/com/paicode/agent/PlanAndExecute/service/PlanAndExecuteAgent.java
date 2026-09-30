@@ -12,6 +12,7 @@ import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.TaskStreamRender;
 import com.paicode.llm.entity.StreamState;
+import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.memory.service.manager.MemoryManager;
 import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
 import com.paicode.agent.PlanAndExecute.entity.TaskExecutionResult;
@@ -20,10 +21,14 @@ import com.paicode.plan.service.Planner;
 import com.paicode.plan.entity.Task;
 import com.paicode.agent.PlanAndExecute.constant.PlanReviewAction;
 import com.paicode.runtime.CancellationContext;
+import com.paicode.skill.service.buffer.SkillContextBuffer;
+import com.paicode.skill.service.manage.SkillRegistry;
+import com.paicode.skill.service.parser.SkillIndexFormatter;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.utils.AnsiStyle;
+import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,17 +49,23 @@ import java.util.stream.Collectors;
  * @Date 2026/9/10 23:13
  * @Description planAndExecute 模式 Agent
  */
+@Setter
 public class PlanAndExecuteAgent {
 
     private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger log = LoggerFactory.getLogger(PlanAndExecuteAgent.class);
 
     private final LlmClient llmClient;
-    private final ToolRegistry toolRegistry;
     private final Planner planner;
     private final PlanReviewHandler reviewHandler;
-    private final MemoryManager memoryManager;
     private Supplier<String> externalContextSupplier = () -> "";
+
+    private final ToolRegistry toolRegistry;
+    private SkillRegistry skillRegistry;
+    private SkillContextBuffer skillContextBuffer;
+
+    private final ConversationHistoryCompactor historyCompactor;
+    private final MemoryManager memoryManager;
 
     // 最大迭代轮数
     private static final int MAX_TASK_ITERATIONS = 5;
@@ -123,6 +134,7 @@ public class PlanAndExecuteAgent {
         this.planner = planner != null ? planner : new Planner(llmClient);
         this.reviewHandler = reviewHandler != null ? reviewHandler : ((goal, plan) -> PlanReviewDecision.execute());
         this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
+        this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setMemorySaver(memoryManager::storeFact);
     }
@@ -369,6 +381,10 @@ public class PlanAndExecuteAgent {
         if (!externalContext.isEmpty()) {
             prompt = prompt + "\n" + externalContext;
         }
+        String skillIndex = buildSkillIndex();
+        if (!skillIndex.isBlank()) {
+            prompt = prompt + "\n" + skillIndex;
+        }
 
         // 注入记忆上下文
         String memoryContext = memoryManager.buildContextForQuery(
@@ -378,6 +394,7 @@ public class PlanAndExecuteAgent {
         if (!memoryContext.isBlank()) {
             taskInput = taskInput + "\n\n" + memoryContext;
         }
+        taskInput = prependSkillBodies(taskInput);
 
         List<Message> messages = Arrays.asList(
                 Message.system(prompt),
@@ -400,6 +417,9 @@ public class PlanAndExecuteAgent {
                 return TaskRunResult.of("⏹️ 已取消任务 [" + task.getId() + "]。", streamRender.hasStreamedOutput());
             }
             iteration ++;
+
+            // 调用 LLM 前先评估是否需要压缩历史
+            maybeCompactHistory(messages, out);
 
             // 调用 LLM
             ChatResponse response = llmClient.chat(messages, toolRegistry.getTools(), streamRender);
@@ -469,6 +489,38 @@ public class PlanAndExecuteAgent {
         streamRender.finish();
         out.println(formatTokenStats(totalInputTokens, totalOutputTokens, totalCachedInputTokens, startNano));
         return TaskRunResult.of(fallbackResult, streamRender.hasStreamedOutput());
+    }
+
+    private void maybeCompactHistory(List<Message> messages, PrintStream out) {
+        if (historyCompactor == null) return;
+        int trigger = memoryManager.getContextProfile().compressionTriggerTokens();
+        try {
+            boolean compacted = historyCompactor.compactIfNeeded(messages, trigger);
+            if (compacted && out != null) {
+                out.println("📦 上下文接近窗口上限，已把早期对话压缩为摘要后继续。");
+            }
+        } catch (Exception e) {
+            log.warn("conversationHistory compaction failed", e);
+        }
+    }
+
+    private String buildSkillIndex() {
+        if (skillRegistry == null) return "";
+        try {
+            return SkillIndexFormatter.format(skillRegistry.enabledSkills());
+        } catch (Exception e) {
+            log.warn("Failed to build skill index", e);
+            return "";
+        }
+    }
+
+    private String prependSkillBodies(String content) {
+        if (skillContextBuffer == null || skillContextBuffer.isEmpty()) {
+            return content;
+        }
+        String drained = skillContextBuffer.drain();
+        if (drained.isEmpty()) return content;
+        return drained + "\n" + content;
     }
 
     private String buildExternalContext() {
