@@ -32,6 +32,9 @@ public class SkillRegistry {
         this.stateStore = stateStore;
     }
 
+    /**
+     * 加载三个来源的 skill
+     */
     public synchronized void reload() {
         skillsByName.clear();
         warnings.clear();

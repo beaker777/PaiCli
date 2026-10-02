@@ -1,6 +1,5 @@
 package com.paicode.agent.ReAct;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.agent.constant.ExitReason;
 import com.paicode.agent.service.AgentBudget;
@@ -10,12 +9,14 @@ import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
 import com.paicode.llm.service.model.LlmClient;
-import com.paicode.llm.service.stream.impl.AgentStreamListener;
+import com.paicode.llm.service.stream.impl.AgentStreamRenderer;
 import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.memory.service.compress.TokenBudget;
 import com.paicode.memory.service.hint.ExplicitMemoryHints;
 import com.paicode.memory.service.manager.MemoryManager;
+import com.paicode.renderer.service.manage.Renderer;
+import com.paicode.renderer.service.manage.impl.PlainRenderer;
 import com.paicode.runtime.CancellationContext;
 import com.paicode.skill.service.buffer.SkillContextBuffer;
 import com.paicode.skill.service.manage.SkillRegistry;
@@ -23,17 +24,13 @@ import com.paicode.skill.service.parser.SkillIndexFormatter;
 import com.paicode.tool.entity.ToolExecutionResult;
 import com.paicode.tool.entity.ToolInvocation;
 import com.paicode.tool.service.register.ToolRegistry;
-import com.paicode.utils.AnsiStyle;
 import lombok.Getter;
 import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.PrintStream;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Supplier;
 
 /**
@@ -45,7 +42,6 @@ import java.util.function.Supplier;
 @Setter
 public class Agent {
 
-    private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger log = LoggerFactory.getLogger(Agent.class);
 
     private LlmClient llmClient;
@@ -57,6 +53,8 @@ public class Agent {
     private final List<Message> conversationHistory;
     private final ConversationHistoryCompactor historyCompactor;
     private final MemoryManager memoryManager;
+
+    private Renderer renderer;
 
     private Supplier<String> externalContextSupplier = () -> "";
 
@@ -140,6 +138,16 @@ public class Agent {
         conversationHistory.add(Message.system(SYSTEM_PROMPT));
     }
 
+    /**
+     * 获取渲染器, 如果未设置懒加载一个 plain
+     */
+    private Renderer renderer() {
+        if (renderer == null) {
+            renderer = new PlainRenderer();
+        }
+        return renderer;
+    }
+
     // 运行
     public String run(String userInput) {
         log.info("ReAct run started: inputLength={}", userInput == null ? 0 : userInput.length());
@@ -150,14 +158,14 @@ public class Agent {
 
         // 检索相关长期记忆, 注入到 system prompt
         ContextProfile contextProfile = memoryManager.getContextProfile();
-        String memoryContext = memoryManager.buildContextForQuery(userInput, 500);
+        String memoryContext = memoryManager.buildContextForQuery(userInput, contextProfile.memoryContextTokens());
         updateSystemPromptWithMemory(memoryContext);
 
         // 将用户输入添加到历史
         String userMessage = prependSkillBodies(userInput);
         conversationHistory.add(Message.user(userMessage));
         StringBuilder reasoningTranscript = new StringBuilder();
-        AgentStreamListener streamListener = new AgentStreamListener();
+        AgentStreamRenderer streamRenderer = new AgentStreamRenderer(renderer.stream());
 
         long startNanos = System.nanoTime();
         AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
@@ -183,7 +191,7 @@ public class Agent {
 
             int iteration = budget.beginIteration();
             try {
-                ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamListener);
+                ChatResponse response = llmClient.chat(conversationHistory, toolRegistry.getTools(), streamRenderer);
                 if (CancellationContext.isCancelled()) {
                     log.info("ReAct run cancelled after LLM response");
                     return "⏹️ 已取消当前任务。";
@@ -193,7 +201,7 @@ public class Agent {
                 budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
 
                 // 重置渲染器的状态, 避免内容错位
-                streamListener.resetBetweenTwoIterations();
+                streamRenderer.resetBetweenTwoIterations();
 
                 // 如果存在调用工具
                 if (response.hasToolCalls()) {
@@ -201,7 +209,7 @@ public class Agent {
                     appendReasoning(reasoningTranscript, response.reasoningContent());
 
                     // 输出 toolCall 内容
-                    printToolCalls(System.out, response.toolCalls());
+                    renderer.appendToolCalls(response.toolCalls());
 
                     // 记录 toolCall
                     budget.recordToolCalls(response.toolCalls());
@@ -238,9 +246,9 @@ public class Agent {
                 }
 
                 String statsLine = formatTokenStats(budget, startNanos);
-                if (streamListener.hasStreamedOutput()) {
-                    streamListener.finish();
-                    System.out.println(statsLine);
+                if (streamRenderer.hasStreamedOutput()) {
+                    streamRenderer.finish();
+                    renderer.stream().println(statsLine);
                     return "";
                 }
 
@@ -400,80 +408,6 @@ public class Agent {
         }
 
         return normalized.substring(0, maxLength) + "...";
-    }
-
-    /**
-     * 按照工具类型分组输出 ToolCall 内容
-     */
-    private static void printToolCalls(PrintStream out, List<ToolCall> toolCalls) {
-        Map<String, List<ToolCall>> grouped = new LinkedHashMap<>();
-        for (ToolCall toolCall : toolCalls) {
-            grouped.computeIfAbsent(toolCall.function().name(), k -> new ArrayList<>()).add(toolCall);
-        }
-
-        for (Map.Entry<String, List<ToolCall>> group : grouped.entrySet()) {
-            String toolName = group.getKey();
-            List<ToolCall> calls = group.getValue();
-            out.println(AnsiStyle.subtle("  " + toolLabel(toolName, calls.size())));
-
-            for (ToolCall call : calls) {
-                String detail = extractKeyParam(toolName, call.function().arguments());
-                if (!detail.isEmpty()) {
-                    out.println(AnsiStyle.subtle("    └ " + detail));
-                }
-            }
-        }
-    }
-
-    private static String toolLabel(String toolName, int count) {
-        return switch (toolName) {
-            case "read_file" -> "📖 读取 " + count + " 个文件";
-            case "write_file" -> "✏️ 写入 " + count + " 个文件";
-            case "list_dir" -> "📂 列出 " + count + " 个目录";
-            case "execute_command" -> "⚡ 执行 " + count + " 条命令";
-            case "create_project" -> "🏗️ 创建 " + count + " 个项目";
-            case "search_code" -> "🔍 搜索代码 " + count + " 次";
-            case "web_search" -> "🌐 联网搜索 " + count + " 次";
-            case "web_fetch" -> "📰 抓取 " + count + " 个网页";
-            case "save_memory" -> "💾 保存长期记忆 " + count + " 条";
-            default -> toolName.startsWith("mcp__") ? formatMcpLabel(toolName, count)
-                    : "🔧 " + toolName + " × " + count;
-        };
-    }
-
-    private static String formatMcpLabel(String toolName, int count) {
-        String[] parts = toolName.split("__", 3);
-        String display = parts.length == 3 ? parts[1] + "." + parts[2] : toolName;
-        return count == 1
-                ? "🔌 调用 MCP 工具 " + display
-                : "🔌 调用 MCP 工具 " + display + " × " + count;
-    }
-
-    private static String extractKeyParam(String toolName, String argsJson) {
-        try {
-            JsonNode node = mapper.readTree(argsJson);
-            String key = switch (toolName) {
-                case "read_file", "write_file", "list_dir" -> "path";
-                case "execute_command" -> "command";
-                case "create_project" -> "name";
-                case "search_code", "web_search" -> "query";
-                case "web_fetch" -> "url";
-                case "save_memory" -> "fact";
-                default -> null;
-            };
-
-            if (key == null) {
-                return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
-            }
-
-            String value = node.path(key).asText("");
-            if (value.length() > 80) {
-                value = value.substring(0, 77) + "...";
-            }
-            return value;
-        } catch (Exception e) {
-            return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
-        }
     }
 
     private String formatTokenStats(AgentBudget budget, long startNanos) {

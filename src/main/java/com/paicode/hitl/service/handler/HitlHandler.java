@@ -1,4 +1,4 @@
-package com.paicode.hitl.service;
+package com.paicode.hitl.service.handler;
 
 import com.paicode.hitl.entity.ApprovalRequest;
 import com.paicode.hitl.entity.ApprovalResult;
@@ -32,4 +32,8 @@ public interface HitlHandler {
     default boolean isApprovedAllByServer(String serverName) {
         return false;
     }
+
+    default void clearApprovedAll() {}
+
+    default void clearApprovedAllForServer(String serverName) {}
 }

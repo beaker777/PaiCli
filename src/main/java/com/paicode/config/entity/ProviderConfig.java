@@ -17,6 +17,8 @@ public class ProviderConfig {
     private String apiKey;
     private String baseUrl;
     private String model;
+    private double temperature = 0.7;
+    private int maxTokens = 8192;
 
     public ProviderConfig() {}
 

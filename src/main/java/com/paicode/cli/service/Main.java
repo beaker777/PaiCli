@@ -21,13 +21,15 @@ import com.paicode.cli.service.complete.PaiCodeCompleter;
 import com.paicode.config.PaiCodeConfig;
 import com.paicode.hitl.entity.ApprovalPolicy;
 import com.paicode.hitl.service.HitlToolRegistry;
-import com.paicode.hitl.service.TerminalHitlHandler;
+import com.paicode.hitl.service.handler.HitlHandler;
+import com.paicode.hitl.service.handler.impl.RendererHitlHandler;
+import com.paicode.hitl.service.handler.impl.SwitchableHitlHandler;
+import com.paicode.hitl.service.handler.impl.TerminalHitlHandler;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.factory.LlmClientFactory;
 import com.paicode.mcp.constant.McpServerStatus;
 import com.paicode.mcp.service.manage.McpServer;
 import com.paicode.mcp.service.manage.McpServerManager;
-import com.paicode.mcp.service.mention.AtMentionCompleter;
 import com.paicode.mcp.service.mention.AtMentionExpander;
 import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.PlanReviewHandler;
@@ -39,12 +41,16 @@ import com.paicode.rag.entity.IndexResult;
 import com.paicode.rag.entity.IndexStats;
 import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.retrieve.SearchResultFormatter;
+import com.paicode.renderer.service.manage.Renderer;
+import com.paicode.renderer.service.manage.factory.RendererFactory;
+import com.paicode.renderer.service.manage.impl.InlineRenderer;
 import com.paicode.runtime.CancellationContext;
 import com.paicode.runtime.CancellationToken;
 import com.paicode.skill.service.buffer.SkillContextBuffer;
 import com.paicode.skill.service.extract.SkillBuiltinExtractor;
 import com.paicode.skill.service.manage.SkillRegistry;
 import com.paicode.skill.service.manage.SkillStateStore;
+import com.paicode.tui.service.manage.TuiBootstrap;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
@@ -66,13 +72,14 @@ import static com.paicode.cli.entity.SlashCommandHint.slashCommandHints;
 /**
  * @Author beaker
  * @Date 2026/9/9 19:56
- * @Description PaiCode v12.0 - MCP Enabled Agent CLI
+ * @Description PaiCode v15.0 - MCP Enabled Agent CLI
  * 支持 ReAct, Plan-And-Execute, Memory, RAG, Multi-Agent, HITL Approval, Parallel Tool Call, Multi-Model,
  * 支持 MCP, MCP resource, Chrome Dev MCP, CDP Session Reuse, Auto Connect Browser, Skill
+ * 支持 TUI (Lanterna 3)
  */
 public class Main {
 
-    private static final String VERSION = "14.0.0";
+    private static final String VERSION = "15.0.0";
     private static final String ENV_FILE = ".env";
 
     // 日志相关配置
@@ -121,7 +128,8 @@ public class Main {
         // 使用 try-with-resource 确保 Terminal 正确关闭
         try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
             // 创建 HITL 处理器 (默认关闭)
-            TerminalHitlHandler hitlHandler = new TerminalHitlHandler(false);
+            TerminalHitlHandler terminalHitlHandler = new TerminalHitlHandler(false);
+            SwitchableHitlHandler hitlHandler = new SwitchableHitlHandler(terminalHitlHandler);
             HitlToolRegistry hitlToolRegistry = new HitlToolRegistry(hitlHandler);
 
             // 浏览器会话复用设置
@@ -213,6 +221,30 @@ public class Main {
             System.out.println("使用 ReAct 模式\n");
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
+
+            // TUI CLI 分支判断
+            if (TuiBootstrap.shouldUseTui(terminal)) {
+                try {
+                    // 启动成功不会走下面的 main 流程, 所有操作在 TUI 内完成
+                    TuiBootstrap.launch(config, llmClient, reactAgent, hitlHandler);
+                    return;
+                } catch (Exception e) {
+                    // 启动失败, 进入 CLI 循环
+                    hitlHandler.setDelegate(terminalHitlHandler);
+                    System.err.println("❌ TUI 启动失败，降级到 CLI: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+
+            // 启动渲染器
+            Renderer renderer = RendererFactory.create(RendererFactory.resolveMode(), terminal);
+            RendererHitlHandler rendererHitl = new RendererHitlHandler(renderer, hitlHandler.isEnabled());
+            hitlHandler.setDelegate(rendererHitl);
+            reactAgent.setRenderer(renderer);
+            renderer.stream();
+            if (renderer instanceof InlineRenderer inline) {
+                bindCtrlOToFoldableBlocks(lineReader, inline);
+            }
 
             // 输出命令目录
             printStartupHints();
@@ -626,7 +658,7 @@ public class Main {
                                                BrowserConnectivityCheck connectivityCheck,
                                                McpServerManager mcpServerManager,
                                                HitlToolRegistry registry,
-                                               TerminalHitlHandler hitlHandler) {
+                                               HitlHandler hitlHandler) {
         String normalized = payload == null || payload.isBlank() ? "status" : payload.trim();
         String[] parts = normalized.split("\\s+");
         String subCommand = parts[0].toLowerCase();
@@ -676,10 +708,10 @@ public class Main {
 
     private static String browserAutoConnect(BrowserSession browserSession,
                                              McpServerManager mcpServerManager,
-                                             TerminalHitlHandler hitlHandler) {
+                                             HitlHandler hitlHandler) {
         McpServer server = mcpServerManager.server("chrome-devtools");
         if (server == null) {
-            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.paicli/mcp.json";
+            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.paicode/mcp.json";
         }
 
         List<String> oldArgs = List.copyOf(server.config().getArgs());
@@ -701,7 +733,7 @@ public class Main {
                                          BrowserSession browserSession,
                                          BrowserConnectivityCheck connectivityCheck,
                                          McpServerManager mcpServerManager,
-                                         TerminalHitlHandler hitlHandler) {
+                                         HitlHandler hitlHandler) {
         if (port < 1024 || port > 65535) {
             return "❌ /browser connect 端口必须在 1024-65535 之间。默认 /browser connect 使用 --autoConnect；旧式 CDP 端口连接可用 /browser connect 9222。";
         }
@@ -713,7 +745,7 @@ public class Main {
 
         McpServer server = mcpServerManager.server("chrome-devtools");
         if (server == null) {
-            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.paicli/mcp.json";
+            return "❌ 未配置 chrome-devtools MCP server，请先检查 ~/.paicode/mcp.json";
         }
         List<String> oldArgs = List.copyOf(server.config().getArgs());
         List<String> sharedArgs = List.of("-y", "chrome-devtools-mcp@latest", "--browser-url=" + probe.browserUrl());
@@ -731,7 +763,7 @@ public class Main {
 
     private static String browserDisconnect(BrowserSession browserSession,
                                             McpServerManager mcpServerManager,
-                                            TerminalHitlHandler hitlHandler) {
+                                            HitlHandler hitlHandler) {
         McpServer server = mcpServerManager.server("chrome-devtools");
         if (server == null) {
             browserSession.switchToIsolated();
@@ -1247,7 +1279,7 @@ public class Main {
         System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
         System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
         System.out.println("║                                                          ║");
-        System.out.printf("║      Skill-Driven Agent CLI %-26s║%n", "v" + VERSION);
+        System.out.printf("║      Terminal-First Agent IDE %-23s║%n", "v" + VERSION);
         System.out.println("║                                                          ║");
         System.out.println("╚══════════════════════════════════════════════════════════╝");
         System.out.println();
@@ -1289,6 +1321,25 @@ public class Main {
         bindSlashWidget(lineReader, LineReader.MAIN, slashHint);
         bindSlashWidget(lineReader, LineReader.EMACS, slashHint);
         bindSlashWidget(lineReader, LineReader.VIINS, slashHint);
+    }
+
+    private static void bindCtrlOToFoldableBlocks(LineReader lineReader, InlineRenderer inline) {
+        if (lineReader == null || inline == null) {
+            return;
+        }
+
+        lineReader.getWidgets().put("paicode-toggle-foldable", () -> {
+            inline.getBlockRegistry().toggleLast();
+            return true;
+        });
+        Reference ref = new Reference("paicode-toggle-foldable");
+        String ctrlO = String.valueOf((char) 15);  // Ctrl+O
+        for (String mapName : new String[]{LineReader.MAIN, LineReader.EMACS, LineReader.VIINS}) {
+            KeyMap<org.jline.reader.Binding> map = lineReader.getKeyMaps().get(mapName);
+            if (map != null) {
+                map.bind(ref, ctrlO);
+            }
+        }
     }
 
     private static void bindSlashWidget(LineReader lineReader, String keyMapName, Reference slashHint) {

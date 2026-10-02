@@ -1,9 +1,10 @@
-package com.paicode.hitl.service;
+package com.paicode.hitl.service.handler.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paicode.hitl.entity.ApprovalPolicy;
 import com.paicode.hitl.entity.ApprovalRequest;
 import com.paicode.hitl.entity.ApprovalResult;
+import com.paicode.hitl.service.handler.HitlHandler;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -199,17 +200,6 @@ public class TerminalHitlHandler implements HitlHandler {
         return ApprovalResult.modify(trimmed);
     }
 
-    public void clearApprovedAll() {
-        approvedAllByTool.clear();
-        approvedAllByServer.clear();
-    }
-
-    public void clearApprovedAllForServer(String serverName) {
-        if (serverName != null) {
-            approvedAllByServer.clear();
-        }
-    }
-
     @Override
     public boolean isEnabled() {
         return enabled;
@@ -228,5 +218,18 @@ public class TerminalHitlHandler implements HitlHandler {
     @Override
     public boolean isApprovedAllByServer(String serverName) {
         return serverName != null && approvedAllByServer.contains(serverName);
+    }
+
+    @Override
+    public void clearApprovedAll() {
+        approvedAllByTool.clear();
+        approvedAllByServer.clear();
+    }
+
+    @Override
+    public void clearApprovedAllForServer(String serverName) {
+        if (serverName != null) {
+            approvedAllByServer.remove(serverName);
+        }
     }
 }
