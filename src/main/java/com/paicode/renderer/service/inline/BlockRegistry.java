@@ -31,6 +31,26 @@ public class BlockRegistry {
         return last.toggle();
     }
 
+    /**
+     * 改变队尾块的内存态, 由 transcript 负责真正完成输出
+     */
+    public synchronized boolean toggleLastForRedraw() {
+        FoldableBlock last = blocks.peekLast();
+        if (last == null) {
+            return false;
+        }
+        return last.toggleForRedraw();
+    }
+
+    /**
+     * 后续输出已经出现, 所有的现存块都不能展开
+     */
+    public synchronized void freezeAll() {
+        for (FoldableBlock block : blocks) {
+            block.freeze();
+        }
+    }
+
     /** 清空注册表（如 /clear 时）。 */
     public synchronized void clear() {
         blocks.clear();

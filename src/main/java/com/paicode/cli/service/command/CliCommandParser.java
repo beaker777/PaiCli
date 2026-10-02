@@ -35,6 +35,10 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.CLEAR, null);
         }
 
+        if (trimmed.equalsIgnoreCase("/config")) {
+            return new ParsedCommand(CommandType.CONFIG, null);
+        }
+
         if (trimmed.equalsIgnoreCase("/model")) {
             return new ParsedCommand(CommandType.SWITCH_MODEL, null);
         }

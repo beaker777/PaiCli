@@ -40,7 +40,7 @@ public class RendererFactory {
 
     /**
      * 创建渲染器, inline 模式如果终端不支持自动降级到 plain 模式
-     * Lanterna 在后续接入, 目前落到 inline
+     * Lanterna 应当在 TuiBootstrap 中完成注册, 走到这里说明注册失败, 使用 plain 兜底
      */
     public static Renderer create(Mode mode, Terminal terminal) {
         return switch (mode) {

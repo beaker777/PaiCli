@@ -42,7 +42,7 @@ public class ToolCallRenderer {
         block.renderInitial();
     }
 
-    private static Map<String, List<ToolCall>> group(List<ToolCall> toolCalls) {
+    public static Map<String, List<ToolCall>> group(List<ToolCall> toolCalls) {
         Map<String, List<ToolCall>> grouped = new LinkedHashMap<>();
         for (ToolCall toolCall : toolCalls) {
             grouped.computeIfAbsent(toolCall.function().name(), k -> new ArrayList<>()).add(toolCall);
@@ -50,7 +50,7 @@ public class ToolCallRenderer {
         return grouped;
     }
 
-    private static String collapsedHeader(Map<String, List<ToolCall>> grouped) {
+    public static String collapsedHeader(Map<String, List<ToolCall>> grouped) {
         // 只有一种 toolCall
         if (grouped.size() == 1) {
             var entry = grouped.entrySet().iterator().next();
@@ -64,7 +64,7 @@ public class ToolCallRenderer {
         return AnsiStyle.subtle("⏵ " + grouped.size() + " 组工具调用 / " + totalCalls + " 次 (ctrl+o to expand)");
     }
 
-    private static List<String> expandedLines(Map<String, List<ToolCall>> grouped) {
+    public static List<String> expandedLines(Map<String, List<ToolCall>> grouped) {
         List<String> lines = new ArrayList<>();
         for (var group : grouped.entrySet()) {
             String toolName = group.getKey();

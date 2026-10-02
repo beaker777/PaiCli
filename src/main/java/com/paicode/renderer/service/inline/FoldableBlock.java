@@ -3,6 +3,7 @@ package com.paicode.renderer.service.inline;
 import lombok.Getter;
 
 import java.io.PrintStream;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -70,7 +71,8 @@ public class FoldableBlock {
             out.print("\r");
             out.print(AnsiSeq.CLEAR_TO_EOS);
 
-            if (expanded) {
+            expanded = !expanded;
+            if (!expanded) {
                 out.println(collapsedHeader);
                 renderedLineCount = 1;
             } else {
@@ -85,11 +87,34 @@ public class FoldableBlock {
                 }
             }
 
-            expanded = !expanded;
             out.flush();
         }
         return true;
     }
 
+    /**
+     * 只切换内存态, 不改变终端
+     */
+    public boolean toggleForRedraw() {
+        expanded = !expanded;
+        renderedLineCount = currentLines().size();
+        return true;
+    }
 
+    /**
+     * 当前状态下应渲染的完整行
+     */
+    public List<String> currentLines() {
+        if (!expanded) {
+           return List.of(collapsedHeader);
+        }
+
+        if (collapseFooter == null || collapseFooter.isEmpty()) {
+            return expandedLines;
+        }
+
+        List<String> lines = new ArrayList<>(expandedLines);
+        lines.add(collapseFooter);
+        return lines;
+    }
 }

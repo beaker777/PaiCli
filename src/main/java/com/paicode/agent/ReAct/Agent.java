@@ -15,6 +15,7 @@ import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.memory.service.compress.TokenBudget;
 import com.paicode.memory.service.hint.ExplicitMemoryHints;
 import com.paicode.memory.service.manager.MemoryManager;
+import com.paicode.renderer.entity.StatusInfo;
 import com.paicode.renderer.service.manage.Renderer;
 import com.paicode.renderer.service.manage.impl.PlainRenderer;
 import com.paicode.runtime.CancellationContext;
@@ -57,6 +58,7 @@ public class Agent {
     private Renderer renderer;
 
     private Supplier<String> externalContextSupplier = () -> "";
+    private Supplier<Boolean> hitlEnabledSupplier = () -> false;
 
     // 系统提示词
     private static final String SYSTEM_PROMPT = """
@@ -169,6 +171,7 @@ public class Agent {
 
         long startNanos = System.nanoTime();
         AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
+        pushStatus(budget, startNanos);
 
         while (true) {
             if (CancellationContext.isCancelled()) {
@@ -199,6 +202,7 @@ public class Agent {
 
                 // 记录 Token 消耗
                 budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
+                pushStatus(budget, startNanos);
 
                 // 重置渲染器的状态, 避免内容错位
                 streamRenderer.resetBetweenTwoIterations();
@@ -279,6 +283,20 @@ public class Agent {
             log.debug("Tool result preview [{}]: {}", result.name(), preview(result.result(), 300));
         }
         return results;
+    }
+
+    /** 把当前预算/耗时/HITL 状态推送给 renderer 状态栏。 */
+    private void pushStatus(AgentBudget budget, long startNanos) {
+        try {
+            String model = llmClient == null ? "—" : llmClient.getModelName();
+            long totalTokens = budget == null ? 0L : (long) (budget.totalInputTokens() + budget.totalOutputTokens());
+            long contextWindow = llmClient == null ? 0L : llmClient.maxContextWindow();
+            boolean hitl = Boolean.TRUE.equals(hitlEnabledSupplier.get());
+            long elapsed = (System.nanoTime() - startNanos) / 1_000_000L;
+            renderer().updateStatus(new StatusInfo(model, totalTokens, contextWindow, hitl, elapsed));
+        } catch (Exception e) {
+            log.debug("status push failed", e);
+        }
     }
 
     private String prependSkillBodies(String userInput) {
@@ -527,5 +545,9 @@ public class Agent {
 
     public void setExternalContextSupplier(Supplier<String> externalContextSupplier) {
         this.externalContextSupplier = externalContextSupplier == null ? () -> "" : externalContextSupplier;
+    }
+
+    public void setHitlEnabledSupplier(Supplier<Boolean> supplier) {
+        this.hitlEnabledSupplier = supplier == null ? () -> false : supplier;
     }
 }

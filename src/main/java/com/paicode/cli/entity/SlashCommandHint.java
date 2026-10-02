@@ -41,6 +41,7 @@ public record SlashCommandHint(String insertText, String display, String descrip
                 new SlashCommandHint("/skill off ", "/skill off <name>", "禁用 skill"),
                 new SlashCommandHint("/skill reload", "/skill reload", "重新扫描 skill 目录"),
                 new SlashCommandHint("/policy", "/policy", "查看安全策略状态"),
+                new SlashCommandHint("/config", "/config", "打开配置 palette（只读视图 + 切换提示）"),
                 new SlashCommandHint("/audit", "/audit", "查看今日最近 10 条危险工具审计"),
                 new SlashCommandHint("/audit ", "/audit [N]", "查看今日最近 N 条危险工具审计"),
                 new SlashCommandHint("/index", "/index", "索引当前代码库"),

@@ -23,6 +23,7 @@ import lombok.Setter;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -59,6 +60,8 @@ public class ToolRegistry {
     private SkillRegistry skillRegistry;
     private SkillContextBuffer skillContextBuffer;
 
+    private BiConsumer<String, String[]> writeFileObserver = (p, ba) -> {};
+
     private final WebSearchTools webSearchTools = new WebSearchTools();
     private final FileTools fileTools = new FileTools(() -> pathGuard);
     private final CodeTools codeTools = new CodeTools(() -> pathGuard);
@@ -84,7 +87,7 @@ public class ToolRegistry {
         this.commandTimeoutSeconds = commandTimeoutSeconds;
         this.toolBatchTimeoutSeconds = toolBatchTimeoutSeconds;
 
-        register(fileTools.create());
+        register(fileTools.create(writeFileObserver));
         register(ShellTools.create(projectPath, this.commandTimeoutSeconds));
         register(codeTools.create());
         register(RagTools.create(projectPath));
@@ -329,5 +332,12 @@ public class ToolRegistry {
 
     private static boolean shouldAudit(String name) {
         return AUDIT_TOOLS.contains(name) || (name != null && name.startsWith("mcp__"));
+    }
+
+    /**
+     * 注册 write_file 写入观察者
+     */
+    public void setWriteFileObserver(BiConsumer<String, String[]> observer) {
+        this.writeFileObserver = observer == null ? (p, ba) -> {} : observer;
     }
 }

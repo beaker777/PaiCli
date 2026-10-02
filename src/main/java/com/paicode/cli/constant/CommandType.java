@@ -98,5 +98,8 @@ public enum CommandType {
     SKILL_OFF,
 
     // 重新加载 Skill
-    SKILL_RELOAD
+    SKILL_RELOAD,
+
+    // 参数配置
+    CONFIG,
 }

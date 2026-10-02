@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 /**
@@ -30,10 +31,10 @@ public class FileTools {
         this.pathGuardSupplier = pathGuardSupplier;
     }
 
-    public List<ToolDefinition> create() {
+    public List<ToolDefinition> create(BiConsumer<String, String[]> observer) {
         return List.of(
                 createReadFileTool(),
-                createWriteFileTool(),
+                createWriteFileTool(observer),
                 createListDirFileTool()
         );
     }
@@ -57,7 +58,7 @@ public class FileTools {
     }
 
     // write_file
-    private ToolDefinition createWriteFileTool() {
+    private ToolDefinition createWriteFileTool(BiConsumer<String, String[]> observer) {
         return new ToolDefinition(
                 "write_file",
                 "写入文件内容 (仅限当前项目根目录内, 大小不超过 5MB)",
@@ -69,21 +70,34 @@ public class FileTools {
                     String path = args.get("path");
                     String content = args.get("content") == null ? "" : args.get("content");
                     int length = content.getBytes(StandardCharsets.UTF_8).length;
-
                     if (length > MAX_WRITE_FILE_BYTES) {
                         throw new PolicyException("写入内容 " + length + " 字节超过 "
                                 + (MAX_WRITE_FILE_BYTES / 1024 / 1024) + "MB 上限");
                     }
 
                     Path safe = pathGuardSupplier.get().resolveSafe(path);
+                    String before = null;
+                    try {
+                        if (Files.exists(safe) && Files.isRegularFile(safe)) {
+                            before = Files.readString(safe);
+                        }
+                    } catch (IOException e) {
+                        // 当无法读取文件内容时按 NULL 处理
+                    }
+
                     try {
                         // 确保目录存在
                         Path parent = safe.getParent();
                         if (parent != null) {
                             Files.createDirectories(parent);
                         }
-
                         Files.writeString(safe, content);
+
+                        try {
+                            observer.accept(path, new String[]{before, content});
+                        } catch (Exception ignored) {
+                            // observer 失败不影响主流程
+                        }
                         return "文件写入完成:\n" + path;
                     } catch (IOException e) {
                         return "文件写入失败: " + e.getMessage();
