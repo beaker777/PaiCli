@@ -12,6 +12,7 @@ import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.TaskStreamRender;
 import com.paicode.llm.entity.StreamState;
+import com.paicode.lsp.entity.LspDiagnosticReport;
 import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.memory.service.manager.MemoryManager;
 import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
@@ -418,6 +419,9 @@ public class PlanAndExecuteAgent {
             }
             iteration ++;
 
+            // 进行诊断
+            injectPendingLspDiagnostics(messages, out);
+
             // 调用 LLM 前先评估是否需要压缩历史
             maybeCompactHistory(messages, out);
 
@@ -489,6 +493,16 @@ public class PlanAndExecuteAgent {
         streamRender.finish();
         out.println(formatTokenStats(totalInputTokens, totalOutputTokens, totalCachedInputTokens, startNano));
         return TaskRunResult.of(fallbackResult, streamRender.hasStreamedOutput());
+    }
+
+    private void injectPendingLspDiagnostics(List<Message> messages, PrintStream out) {
+        LspDiagnosticReport report = toolRegistry.flushPendingLspDiagnostics();
+        if (report == null || report.isEmpty()) {
+            return;
+        }
+        messages.add(Message.user(report.promptText()));
+        out.println(report.displayText());
+        log.info("Injected LSP diagnostics into plan task conversation");
     }
 
     private void maybeCompactHistory(List<Message> messages, PrintStream out) {

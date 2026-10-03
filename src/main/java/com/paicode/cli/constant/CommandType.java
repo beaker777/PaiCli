@@ -102,4 +102,10 @@ public enum CommandType {
 
     // 参数配置
     CONFIG,
+
+    // 快照
+    SNAPSHOT,
+
+    // 回滚快照
+    RESTORE_SNAPSHOT,
 }

@@ -14,6 +14,7 @@ import com.paicode.llm.entity.ToolCall;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.impl.DeepSeekClient;
 import com.paicode.llm.service.stream.impl.SubAgentStreamRenderer;
+import com.paicode.lsp.entity.LspDiagnosticReport;
 import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.skill.service.buffer.SkillContextBuffer;
 import com.paicode.skill.service.manage.SkillRegistry;
@@ -286,6 +287,7 @@ public class SubAgent {
 
             budget.beginIteration();
 
+            injectPendingLspDiagnostics(out);
             maybeCompactHistory(out);
             try {
                 ChatResponse response = llmClient.chat(
@@ -378,6 +380,16 @@ public class SubAgent {
             log.info("[{}] executing {} tool calls in parallel", name, invocations.size());
         }
         return toolRegistry.executeTools(invocations);
+    }
+
+    private void injectPendingLspDiagnostics(PrintStream out) {
+        LspDiagnosticReport report = toolRegistry.flushPendingLspDiagnostics();
+        if (report == null || report.isEmpty()) {
+            return;
+        }
+        conversationHistory.add(Message.user(report.promptText()));
+        out.println(report.displayText());
+        log.info("[{}] injected LSP diagnostics into sub-agent conversation", name);
     }
 
     private static void printToolCalls(PrintStream out, List<ToolCall> toolCalls) {

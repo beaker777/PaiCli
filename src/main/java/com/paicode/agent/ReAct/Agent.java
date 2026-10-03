@@ -10,6 +10,7 @@ import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.stream.impl.AgentStreamRenderer;
+import com.paicode.lsp.entity.LspDiagnosticReport;
 import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.service.compress.ConversationHistoryCompactor;
 import com.paicode.memory.service.compress.TokenBudget;
@@ -179,6 +180,9 @@ public class Agent {
                 return "⏹️ 已取消当前任务。";
             }
 
+            // 对代码进行诊断
+            injectPendingLspDiagnostics();
+
             // 判断是否需要压缩对话
             maybeCompactHistory();
             ExitReason exitReason = budget.check();
@@ -283,6 +287,17 @@ public class Agent {
             log.debug("Tool result preview [{}]: {}", result.name(), preview(result.result(), 300));
         }
         return results;
+    }
+
+    private void injectPendingLspDiagnostics() {
+        LspDiagnosticReport report = toolRegistry.flushPendingLspDiagnostics();
+        if (report == null || report.isEmpty()) {
+            return;
+        }
+
+        conversationHistory.add(Message.user(report.promptText()));
+        renderer.stream().println(report.displayText());
+        log.info("Injected LSP diagnostics into ReAct conversation");
     }
 
     /** 把当前预算/耗时/HITL 状态推送给 renderer 状态栏。 */

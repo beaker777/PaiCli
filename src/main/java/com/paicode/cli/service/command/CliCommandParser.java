@@ -127,6 +127,22 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.AUDIT_TAIL, trimmed.substring(7).trim());
         }
 
+        if (trimmed.equalsIgnoreCase("/snapshot")) {
+            return new ParsedCommand(CommandType.SNAPSHOT, "list");
+        }
+
+        if (trimmed.regionMatches(true, 0, "/snapshot ", 0, 10)) {
+            return new ParsedCommand(CommandType.SNAPSHOT, trimmed.substring(10).trim());
+        }
+
+        if (trimmed.equalsIgnoreCase("/restore")) {
+            return new ParsedCommand(CommandType.RESTORE_SNAPSHOT, null);
+        }
+
+        if (trimmed.regionMatches(true, 0, "/restore ", 0, 9)) {
+            return new ParsedCommand(CommandType.RESTORE_SNAPSHOT, trimmed.substring(9).trim());
+        }
+
         if (trimmed.equalsIgnoreCase("/mcp")) {
             return new ParsedCommand(CommandType.MCP_LIST, null);
         }

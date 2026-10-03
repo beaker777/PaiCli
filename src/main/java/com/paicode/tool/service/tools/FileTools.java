@@ -1,5 +1,6 @@
 package com.paicode.tool.service.tools;
 
+import com.paicode.lsp.service.LspManager;
 import com.paicode.policy.exception.PolicyException;
 import com.paicode.policy.service.guard.PathGuard;
 import com.paicode.tool.entity.Param;
@@ -31,10 +32,10 @@ public class FileTools {
         this.pathGuardSupplier = pathGuardSupplier;
     }
 
-    public List<ToolDefinition> create(BiConsumer<String, String[]> observer) {
+    public List<ToolDefinition> create(BiConsumer<String, String[]> observer, LspManager lspManager) {
         return List.of(
                 createReadFileTool(),
-                createWriteFileTool(observer),
+                createWriteFileTool(observer, lspManager),
                 createListDirFileTool()
         );
     }
@@ -58,7 +59,7 @@ public class FileTools {
     }
 
     // write_file
-    private ToolDefinition createWriteFileTool(BiConsumer<String, String[]> observer) {
+    private ToolDefinition createWriteFileTool(BiConsumer<String, String[]> observer, LspManager lspManager) {
         return new ToolDefinition(
                 "write_file",
                 "写入文件内容 (仅限当前项目根目录内, 大小不超过 5MB)",
@@ -98,6 +99,8 @@ public class FileTools {
                         } catch (Exception ignored) {
                             // observer 失败不影响主流程
                         }
+
+                        runPostEditLspHook(path, safe, lspManager);
                         return "文件写入完成:\n" + path;
                     } catch (IOException e) {
                         return "文件写入失败: " + e.getMessage();
@@ -134,5 +137,15 @@ public class FileTools {
                     }
                 }
         );
+    }
+
+    private void runPostEditLspHook(String displayPath, Path safePath, LspManager lspManager) {
+        try {
+            if (lspManager != null) {
+                lspManager.runPostEditLspHook(displayPath, safePath);
+            }
+        } catch (Exception ignored) {
+
+        }
     }
 }

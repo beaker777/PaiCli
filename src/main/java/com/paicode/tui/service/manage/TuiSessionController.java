@@ -9,6 +9,9 @@ import com.paicode.hitl.service.handler.HitlHandler;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.runtime.CancellationContext;
 import com.paicode.runtime.CancellationToken;
+import com.paicode.snapshot.entity.RestoreResult;
+import com.paicode.snapshot.entity.TurnSnapshot;
+import com.paicode.snapshot.service.SnapshotService;
 import com.paicode.tui.constant.RunMode;
 import com.paicode.tui.entity.MessageRecord;
 import com.paicode.tui.service.history.ConversationSnapshot;
@@ -18,6 +21,7 @@ import com.paicode.tui.service.pane.component.StatusPane;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -162,6 +166,22 @@ public class TuiSessionController implements AutoCloseable {
             appendSystem("HITL 当前状态: " + (hitlHandler.isEnabled() ? "启用" : "关闭"));
             return true;
         }
+        if ("/snapshot".equals(lower)) {
+            appendSystem(formatSnapshots());
+            return true;
+        }
+        if ("/snapshot status".equals(lower)) {
+            appendSystem(reactAgent.getToolRegistry().getSnapshotService().status());
+            return true;
+        }
+        if ("/snapshot clean".equals(lower)) {
+            appendSystem(reactAgent.getToolRegistry().getSnapshotService().clean());
+            return true;
+        }
+        if (lower.startsWith("/restore ")) {
+            appendSystem(restoreSnapshot(input.substring(9).trim()));
+            return true;
+        }
         if ("/config".equals(lower)) {
             ui(showConfigPanel);
             return true;
@@ -199,6 +219,7 @@ public class TuiSessionController implements AutoCloseable {
                     TUI 当前支持命令：
                     /clear, /context, /memory, /memory clear, /save <事实>
                     /hitl, /hitl on, /hitl off
+                    /snapshot, /snapshot status, /snapshot clean, /restore <N>
                     /config, /plan <任务>, /team <任务>, /cancel, /exit
                     其余管理命令请暂时在默认 CLI 模式执行。
                     """);
@@ -216,7 +237,8 @@ public class TuiSessionController implements AutoCloseable {
         String output;
 
         try {
-            output = captureStdout(() -> switch (mode) {
+            SnapshotService snapshots = reactAgent.getToolRegistry().getSnapshotService();
+            output = captureStdout(() -> snapshots.runTurn(mode.name().toLowerCase(), input, () -> switch (mode) {
                 case REACT -> reactAgent.run(input);
                 case PLAN -> new PlanAndExecuteAgent(
                         llmClient,
@@ -229,7 +251,7 @@ public class TuiSessionController implements AutoCloseable {
                         reactAgent.getToolRegistry(),
                         reactAgent.getMemoryManager()
                 ).run(input);
-            });
+            }));
         } catch (Exception e) {
             output = "执行失败: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         } finally {
@@ -241,6 +263,52 @@ public class TuiSessionController implements AutoCloseable {
             });
         }
         appendAssistant(cleanOutput(output));
+    }
+
+    private String formatSnapshots() {
+        try {
+            List<TurnSnapshot> snapshots = reactAgent.getToolRegistry().getSnapshotService().listSnapshots(20);
+            if (snapshots.isEmpty()) {
+                return "暂无 Side-Git 快照。";
+            }
+            StringBuilder sb = new StringBuilder("最近 Side-Git 快照：\n");
+            int preTurnIndex = 0;
+            for (TurnSnapshot snapshot : snapshots) {
+                String restoreHint = "";
+                if ("pre-turn".equals(snapshot.phase().label())) {
+                    preTurnIndex++;
+                    restoreHint = " /restore " + preTurnIndex;
+                }
+                sb.append(snapshot.shortCommitId())
+                        .append(' ')
+                        .append(snapshot.phase().label())
+                        .append(' ')
+                        .append(snapshot.turnId())
+                        .append(' ')
+                        .append(snapshot.createdAt())
+                        .append(restoreHint)
+                        .append('\n');
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "读取快照失败: " + e.getMessage();
+        }
+    }
+
+    private String restoreSnapshot(String payload) {
+        int offset = 1;
+        if (payload != null && !payload.isBlank()) {
+            try {
+                offset = Integer.parseInt(payload.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        try {
+            RestoreResult result = reactAgent.getToolRegistry().getSnapshotService().restorePreTurn(offset);
+            return result.formatForCli();
+        } catch (Exception e) {
+            return "恢复快照失败: " + e.getMessage();
+        }
     }
 
     private static String captureStdout(ThrowingSupplier<String> supplier) throws Exception {

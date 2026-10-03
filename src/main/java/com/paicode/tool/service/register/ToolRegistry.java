@@ -8,10 +8,13 @@ import com.paicode.browser.service.connect.BrowserConnector;
 import com.paicode.browser.service.guard.BrowserGuard;
 import com.paicode.context.ContextProfile;
 import com.paicode.llm.entity.Tool;
+import com.paicode.lsp.entity.LspDiagnosticReport;
+import com.paicode.lsp.service.LspManager;
 import com.paicode.mcp.entity.McpToolDescription;
 import com.paicode.runtime.CancellationContext;
 import com.paicode.skill.service.buffer.SkillContextBuffer;
 import com.paicode.skill.service.manage.SkillRegistry;
+import com.paicode.snapshot.service.SnapshotService;
 import com.paicode.tool.entity.*;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.policy.exception.PolicyException;
@@ -21,6 +24,7 @@ import com.paicode.tool.service.tools.*;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
@@ -40,7 +44,8 @@ public class ToolRegistry {
     private String projectPath = System.getProperty("user.dir");
 
     // 需要审计的工具 (与 ApprovalPolicy 的 DANGEROUS_TOOLS 保持一致)
-    private static final Set<String> AUDIT_TOOLS = Set.of("write_file", "execute_command", "create_project");
+    private static final Set<String> AUDIT_TOOLS = Set.of("write_file", "execute_command", "create_project",
+            "revert_turn");
     private final Map<String, ToolDefinition> tools = new ConcurrentHashMap<>();
     private final Map<String, McpRegisteredTool> mcpTools = new ConcurrentHashMap<>();
     private PathGuard pathGuard = new PathGuard(projectPath);
@@ -59,6 +64,13 @@ public class ToolRegistry {
     // skill 注册
     private SkillRegistry skillRegistry;
     private SkillContextBuffer skillContextBuffer;
+
+    // Lsp 管理器
+    private LspManager lspManager = new LspManager(projectPath);
+
+    // 快照服务
+    private SnapshotService snapshotService = SnapshotService.forProject(Path.of(projectPath));
+    private boolean customSnapshotService;
 
     private BiConsumer<String, String[]> writeFileObserver = (p, ba) -> {};
 
@@ -87,7 +99,7 @@ public class ToolRegistry {
         this.commandTimeoutSeconds = commandTimeoutSeconds;
         this.toolBatchTimeoutSeconds = toolBatchTimeoutSeconds;
 
-        register(fileTools.create(writeFileObserver));
+        register(fileTools.create(writeFileObserver, lspManager));
         register(ShellTools.create(projectPath, this.commandTimeoutSeconds));
         register(codeTools.create());
         register(RagTools.create(projectPath));
@@ -95,6 +107,7 @@ public class ToolRegistry {
         register(browserTools.create());
         register(MemoryTools.create(memorySaver));
         register(SkillTools.create(skillRegistry, skillContextBuffer));
+        register(SnapshotTools.create(snapshotService));
     }
 
     private void register(List<ToolDefinition> toolList) {
@@ -246,7 +259,11 @@ public class ToolRegistry {
         }
     }
 
-    protected BrowserCheckResult checkBrowserTool(String name, String argumentsJson, boolean previewOnly) {
+    public LspDiagnosticReport flushPendingLspDiagnostics() {
+        return lspManager == null ? LspDiagnosticReport.EMPTY : lspManager.flushPendingDiagnostics();
+    }
+
+    public BrowserCheckResult checkBrowserTool(String name, String argumentsJson, boolean previewOnly) {
         if (browserGuard == null || !BrowserGuard.isChromeTool(name)) {
             return BrowserCheckResult.allow(null);
         }
@@ -297,12 +314,6 @@ public class ToolRegistry {
         }
     }
 
-    public void setContextProfile(ContextProfile contextProfile) {
-        if (contextProfile != null) {
-            this.contextProfile = contextProfile;
-        }
-    }
-
     /**
      * 获取所有工具定义（用于LLM）
      */
@@ -325,13 +336,24 @@ public class ToolRegistry {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos);
     }
 
+    private static boolean shouldAudit(String name) {
+        return AUDIT_TOOLS.contains(name) || (name != null && name.startsWith("mcp__"));
+    }
+
     public void setProjectPath(String projectPath) {
         this.projectPath = projectPath;
         this.pathGuard = new PathGuard(projectPath);
+        this.lspManager.setProjectPath(projectPath);
+        if (!customSnapshotService) {
+            this.snapshotService.close();
+            this.snapshotService = SnapshotService.forProject(Path.of(projectPath));
+        }
     }
 
-    private static boolean shouldAudit(String name) {
-        return AUDIT_TOOLS.contains(name) || (name != null && name.startsWith("mcp__"));
+    public void setContextProfile(ContextProfile contextProfile) {
+        if (contextProfile != null) {
+            this.contextProfile = contextProfile;
+        }
     }
 
     /**
@@ -339,5 +361,15 @@ public class ToolRegistry {
      */
     public void setWriteFileObserver(BiConsumer<String, String[]> observer) {
         this.writeFileObserver = observer == null ? (p, ba) -> {} : observer;
+    }
+
+    public void setLspManager(LspManager lspManager) {
+        this.lspManager = lspManager == null ? new LspManager(projectPath) : lspManager;
+        this.lspManager.setProjectPath(projectPath);
+    }
+
+    public void setSnapshotService(SnapshotService snapshotService) {
+        this.snapshotService = snapshotService == null ? SnapshotService.forProject(Path.of(projectPath)) : snapshotService;
+        this.customSnapshotService = snapshotService != null;
     }
 }

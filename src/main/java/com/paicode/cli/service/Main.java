@@ -50,6 +50,9 @@ import com.paicode.skill.service.buffer.SkillContextBuffer;
 import com.paicode.skill.service.extract.SkillBuiltinExtractor;
 import com.paicode.skill.service.manage.SkillRegistry;
 import com.paicode.skill.service.manage.SkillStateStore;
+import com.paicode.snapshot.entity.RestoreResult;
+import com.paicode.snapshot.entity.TurnSnapshot;
+import com.paicode.snapshot.service.SnapshotService;
 import com.paicode.tui.service.manage.TuiBootstrap;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.*;
@@ -119,7 +122,7 @@ public class Main {
         LlmClient llmClient = LlmClientFactory.createFromConfig(config);
         if (llmClient == null) {
             System.err.println("错误: 未找到 API_KEY");
-            System.err.println("请在 .env 文件中添加: API_KEY=your_api_key_here");
+            System.err.println("请在 .env 文件中添加 GLM_API_KEY, DEEPSEEK_API_KEY 或 STEP_API_KEY");
             System.exit(1);
         }
 
@@ -347,9 +350,10 @@ public class Main {
                         String provider = command.payload();
                         if (provider == null || provider.isBlank()) {
                             System.out.println("🤖 当前模型: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
-                            System.out.println("   可用模型：glm, deepseek");
-                            System.out.println("   /model glm     - 切换到 GLM-5.1");
-                            System.out.println("   /model deepseek - 切换到 DeepSeek V4\n");
+                            System.out.println("   可用模型：glm, deepseek, step");
+                            System.out.println("   /model glm      - 切换到 GLM-5.1");
+                            System.out.println("   /model deepseek - 切换到 DeepSeek V4");
+                            System.out.println("   /model step     - 切换到阶跃星辰 StepFun\n");
                         } else {
                             LlmClient newClient = LlmClientFactory.create(provider, config);
                             if (newClient == null) {
@@ -416,6 +420,14 @@ public class Main {
                     case AUDIT_TAIL -> {
                         printAuditTail(reactAgent, command.payload());
 
+                        continue;
+                    }
+                    case SNAPSHOT -> {
+                        printSnapshotCommand(reactAgent.getToolRegistry().getSnapshotService(), command.payload());
+                        continue;
+                    }
+                    case RESTORE_SNAPSHOT -> {
+                        printRestoreCommand(reactAgent.getToolRegistry().getSnapshotService(), command.payload());
                         continue;
                     }
                     case MCP_LIST -> {
@@ -568,7 +580,9 @@ public class Main {
 
                 String taskInput = input;
                 Callable<String> runTask;
+                String snapshotMode;
                 if (nextTaskUsePlanMode || command.type() == CommandType.SWITCH_PLAN) {
+                    snapshotMode = "plan";
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
                         PlanAndExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader);
@@ -578,6 +592,7 @@ public class Main {
                         return planAgent.run(taskInput);
                     };
                 } else if (nextTaskUseTeamMode || command.type() == CommandType.SWITCH_TEAM) {
+                    snapshotMode = "team";
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
                         AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent);
@@ -586,9 +601,12 @@ public class Main {
                         return orchestrator.run(taskInput);
                     };
                 } else {
+                    snapshotMode = "react";
                     runTask = () -> reactAgent.run(taskInput);
                 }
-                String response = runWithCancelSupport(terminal, runTask);
+                SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
+                String response = runWithCancelSupport(terminal,
+                        () -> snapshotService.runTurn(snapshotMode, taskInput, runTask::call));
                 nextTaskUsePlanMode = false;
                 nextTaskUseTeamMode = false;
 
@@ -659,6 +677,70 @@ public class Main {
             }
             CancellationContext.clear(token);
             executor.shutdownNow();
+        }
+    }
+
+    private static void printSnapshotCommand(SnapshotService snapshotService, String payload) {
+        String normalized = payload == null || payload.isBlank() ? "list" : payload.trim().toLowerCase();
+        if ("status".equals(normalized)) {
+            System.out.println(snapshotService.status());
+            System.out.println();
+            return;
+        }
+        if ("clean".equals(normalized)) {
+            System.out.println(snapshotService.clean());
+            System.out.println();
+            return;
+        }
+        if (!"list".equals(normalized)) {
+            System.out.println("""
+                    ❌ 未知 /snapshot 子命令: %s
+                    可用命令：
+                      /snapshot
+                      /snapshot status
+                      /snapshot clean
+                      /restore <N>
+                    """.formatted(payload).trim());
+            System.out.println();
+            return;
+        }
+
+        try {
+            List<TurnSnapshot> snapshots = snapshotService.listSnapshots(20);
+            if (snapshots.isEmpty()) {
+                System.out.println("📭 暂无 Side-Git 快照\n");
+                return;
+            }
+
+            System.out.println("📸 最近 " + snapshots.size() + " 条 Side-Git 快照：");
+            int preTurnIndex = 0;
+            for (TurnSnapshot snapshot : snapshots) {
+                String restoreHint = "";
+                if ("pre-turn".equals(snapshot.phase().label())) {
+                    preTurnIndex++;
+                    restoreHint = "  /restore " + preTurnIndex;
+                }
+                System.out.printf("   %s %-11s %-18s %s%s%n",
+                        snapshot.shortCommitId(),
+                        snapshot.phase().label(),
+                        snapshot.turnId(),
+                        snapshot.createdAt(),
+                        restoreHint);
+            }
+            System.out.println();
+        } catch (Exception e) {
+            System.out.println("❌ 读取快照失败: " + e.getMessage() + "\n");
+        }
+    }
+
+    private static void printRestoreCommand(SnapshotService snapshotService, String payload) {
+        int offset = parseAuditCount(payload, 1);
+        try {
+            RestoreResult result = snapshotService.restorePreTurn(offset);
+            System.out.println(result.formatForCli());
+            System.out.println();
+        } catch (Exception e) {
+            System.out.println("❌ 恢复快照失败: " + e.getMessage() + "\n");
         }
     }
 
@@ -1395,7 +1477,7 @@ public class Main {
             return;
         }
         String hint = switch (selected) {
-            case 0, 1 -> "💡 切换模型: /model glm 或 /model deepseek";
+            case 0, 1 -> "💡 切换模型: /model glm / /model deepseek / /model step";
             case 2 -> "💡 切换 HITL: /hitl on / /hitl off";
             case 3 -> "💡 管理 Skill: /skill list / /skill on <name> / /skill off <name>";
             case 4 -> "💡 切换渲染器（重启后生效）: PAICLI_RENDERER=inline|lanterna|plain";

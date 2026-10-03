@@ -13,6 +13,7 @@ public class AnsiStyle {
     private static final String CYAN = "\u001B[36m";
     private static final String GREEN = "\u001B[32m";
     private static final String YELLOW = "\u001B[33m";
+    private static final String RED = "\u001B[31m";
     private static final String GRAY = "\u001B[90m";
     private static final boolean ENABLED = determineEnabled();
 
@@ -33,6 +34,10 @@ public class AnsiStyle {
 
     public static String codeLabel(String text) {
         return wrap(BOLD + YELLOW, text);
+    }
+
+    public static String error(String text) {
+        return wrap(BOLD + RED, text);
     }
 
     public static String quotePrefix(String text) {
