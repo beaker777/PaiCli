@@ -1,5 +1,6 @@
 package com.paicode.memory.service.compress;
 
+import com.paicode.llm.entity.ContentPart;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.entity.ToolCall;
 import com.paicode.memory.entity.MemoryEntry;
@@ -107,7 +108,20 @@ public class TokenBudget {
         if (messages == null) return 0;
         int total = 0;
         for (Message message : messages) {
-            total += MemoryEntry.estimateTokens(message.content());
+            if (message.contentParts() != null) {
+                for (ContentPart part : message.contentParts()) {
+                    if (part == null) {
+                        continue;
+                    }
+                    if (part.isText()) {
+                        total += MemoryEntry.estimateTokens(part.text());
+                    } else if (part.isImage()) {
+                        total += estimateImageTokens(part);
+                    }
+                }
+            } else {
+                total += MemoryEntry.estimateTokens(message.content());
+            }
 
             // toolCall 的 token 也计算在内
             if (message.toolCalls() != null) {
@@ -120,5 +134,13 @@ public class TokenBudget {
         // 每条消息额外开销 4 tokens
         total += messages.size() * 4;
         return total;
+    }
+
+    private static int estimateImageTokens(ContentPart part) {
+        if (part.imageBase64() != null && !part.imageBase64().isBlank()) {
+            int bytes = (int) (part.imageBase64().length() * 3L / 4L);
+            return Math.max(256, Math.min(4096, bytes / 768));
+        }
+        return 1024;
     }
 }

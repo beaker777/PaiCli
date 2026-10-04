@@ -199,6 +199,14 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.BROWSER, trimmed.substring(9).trim());
         }
 
+        if (trimmed.equalsIgnoreCase("/task")) {
+            return new ParsedCommand(CommandType.TASK, "list");
+        }
+
+        if (trimmed.regionMatches(true, 0, "/task ", 0, 6)) {
+            return new ParsedCommand(CommandType.TASK, trimmed.substring(6).trim());
+        }
+
         if (trimmed.startsWith("/")) {
             return new ParsedCommand(CommandType.UNKNOWN_COMMAND, trimmed);
         }

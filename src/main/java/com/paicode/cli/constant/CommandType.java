@@ -108,4 +108,7 @@ public enum CommandType {
 
     // 回滚快照
     RESTORE_SNAPSHOT,
+
+    //任务
+    TASK,
 }

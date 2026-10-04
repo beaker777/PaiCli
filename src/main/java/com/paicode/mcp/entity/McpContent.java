@@ -8,5 +8,5 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * @Description MCP 响应正文
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record McpContent(String type, String text) {
+public record McpContent(String type, String text, String data, String mimeType) {
 }

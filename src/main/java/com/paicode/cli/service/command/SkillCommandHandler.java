@@ -20,17 +20,7 @@ public class SkillCommandHandler {
         }
 
         List<Skill> enabled = registry.enabledSkills();
-        StringBuilder sb = new StringBuilder("📚 Skills 加载（" + all.size() + " 个）...\n");
-        for (Skill skill : all) {
-            boolean isEnabled = enabled.contains(skill);
-            sb.append(String.format("   %s %-16s %-8s %s%n",
-                    isEnabled ? "✓" : "○",
-                    skill.name(),
-                    skill.displaySource(),
-                    abbreviate(skill.description(), 60)));
-        }
-        sb.append("   ").append(enabled.size()).append("/").append(all.size()).append(" 启用");
-        return sb.toString();
+        return "📚 Skills: " + enabled.size() + "/" + all.size() + " 启用";
     }
 
     public static String list(SkillRegistry registry) {

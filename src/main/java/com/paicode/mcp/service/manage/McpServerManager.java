@@ -15,6 +15,7 @@ import com.paicode.mcp.service.transport.impl.StdioTransport;
 import com.paicode.mcp.service.transport.impl.StreamableHttpTransport;
 import com.paicode.policy.entity.AuditEntry;
 import com.paicode.policy.service.audit.AuditLog;
+import com.paicode.tool.entity.ToolOutput;
 import com.paicode.tool.service.register.ToolRegistry;
 
 import java.io.IOException;
@@ -438,10 +439,10 @@ public class McpServerManager implements AutoCloseable {
     }
 
     private void replaceTools(McpServer server, McpClient client, List<McpToolDescription> tools) {
-        toolRegistry.replaceMcpToolsForServer(server.name(), tools,
+        toolRegistry.replaceMcpToolOutputsForServer(server.name(), tools,
                 description -> isResourceVirtualTool(description)
-                        ? McpResourceTool.invoker(client, description)
-                        : args -> invokeMcpTool(client, description, args));
+                        ? args -> ToolOutput.text(McpResourceTool.invoker(client, description).apply(args))
+                        : args -> invokeMcpToolOutput(client, description, args));
     }
 
     private boolean isResourceVirtualTool(McpToolDescription description) {
@@ -484,11 +485,12 @@ public class McpServerManager implements AutoCloseable {
     }
 
 
-    private static String invokeMcpTool(McpClient client, McpToolDescription description, String argumentsJson) {
+    private static ToolOutput invokeMcpToolOutput(McpClient client, McpToolDescription description, String argumentsJson) {
         try {
-            return client.callTool(description.name(), argumentsJson);
+            return client.callToolOutput(description.name(), argumentsJson);
         } catch (Exception e) {
-            return "MCP 工具调用失败 (" + description.serverName() + "/" + description.name() + "): " + e.getMessage();
+            return  ToolOutput.text("MCP 工具调用失败 (" + description.serverName() + "/" + description.name() + "): "
+                    + e.getMessage());
         }
     }
 

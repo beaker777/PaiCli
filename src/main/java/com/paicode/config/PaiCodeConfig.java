@@ -60,12 +60,12 @@ public class PaiCodeConfig {
         return loadBaseUrlFromEnv(provider);
     }
 
-
     private static String loadApiKeyFromEnv(String provider) {
         String envKey = switch (provider.toLowerCase()) {
             case "glm" -> "GLM_API_KEY";
             case "deepseek" -> "DEEPSEEK_API_KEY";
             case "step" -> "STEP_API_KEY";
+            case "kimi" -> "KIMI_API_KEY";
             default -> provider.toUpperCase() + "_API_KEY";
         };
 
@@ -79,6 +79,17 @@ public class PaiCodeConfig {
             return dotEnvValue.trim();
         }
 
+        if ("kimi".equalsIgnoreCase(provider)) {
+            String moonshotValue = System.getenv("MOONSHOT_API_KEY");
+            if (moonshotValue != null && !moonshotValue.isBlank()) {
+                return moonshotValue.trim();
+            }
+            String moonshotDotEnvValue = readFromDotEnv("MOONSHOT_API_KEY");
+            if (moonshotDotEnvValue != null && !moonshotDotEnvValue.isBlank()) {
+                return moonshotDotEnvValue.trim();
+            }
+        }
+
         return null;
     }
 
@@ -86,6 +97,7 @@ public class PaiCodeConfig {
         String envKey = switch (provider.toLowerCase()) {
             case "glm" -> "GLM_MODEL";
             case "deepseek" -> "DEEPSEEK_MODEL";
+            case "kimi" -> "KIMI_MODEL";
             default -> provider.toUpperCase() + "_MODEL";
         };
 
@@ -99,12 +111,24 @@ public class PaiCodeConfig {
             return dotEnvValue.trim();
         }
 
+        if ("kimi".equalsIgnoreCase(provider)) {
+            String moonshotValue = System.getenv("MOONSHOT_MODEL");
+            if (moonshotValue != null && !moonshotValue.isBlank()) {
+                return moonshotValue.trim();
+            }
+            String moonshotDotEnvValue = readFromDotEnv("MOONSHOT_MODEL");
+            if (moonshotDotEnvValue != null && !moonshotDotEnvValue.isBlank()) {
+                return moonshotDotEnvValue.trim();
+            }
+        }
+
         return null;
     }
 
     private static String loadBaseUrlFromEnv(String provider) {
         String envKey = switch (provider.toLowerCase()) {
             case "step" -> "STEP_BASE_URL";
+            case "kimi" -> "KIMI_BASE_URL";
             default -> provider.toUpperCase() + "_BASE_URL";
         };
 
@@ -116,6 +140,17 @@ public class PaiCodeConfig {
         String dotEnvValue = readFromDotEnv(envKey);
         if (dotEnvValue != null && !dotEnvValue.isBlank()) {
             return dotEnvValue.trim();
+        }
+
+        if ("kimi".equalsIgnoreCase(provider)) {
+            String moonshotValue = System.getenv("MOONSHOT_BASE_URL");
+            if (moonshotValue != null && !moonshotValue.isBlank()) {
+                return moonshotValue.trim();
+            }
+            String moonshotDotEnvValue = readFromDotEnv("MOONSHOT_BASE_URL");
+            if (moonshotDotEnvValue != null && !moonshotDotEnvValue.isBlank()) {
+                return moonshotDotEnvValue.trim();
+            }
         }
 
         return null;

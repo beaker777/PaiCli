@@ -14,6 +14,7 @@ import com.paicode.mcp.response.McpToolCallResponse;
 import com.paicode.mcp.service.jsonrpc.JsonRpcClient;
 import com.paicode.mcp.service.protocol.McpSchemaSanitizer;
 import com.paicode.mcp.service.transport.McpTransport;
+import com.paicode.tool.entity.ToolOutput;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -113,6 +114,10 @@ public class McpClient implements AutoCloseable {
      * 调用工具
      */
     public String callTool(String toolName, String argumentsJson) throws IOException {
+        return callToolOutput(toolName, argumentsJson).text();
+    }
+
+    public ToolOutput callToolOutput(String toolName, String argumentsJson) throws IOException {
         JsonNode args;
         if (argumentsJson == null || argumentsJson.isBlank()) {
             args  = JsonNodeFactory.instance.objectNode();
@@ -125,10 +130,11 @@ public class McpClient implements AutoCloseable {
         McpToolCallResponse callResponse = MAPPER.treeToValue(result, McpToolCallResponse.class);
         String formatted = callResponse.formatForLlm();
 
+        ToolOutput output = callResponse.toToolOutput();
         if (callResponse.isError()) {
-            return "MCP 工具返回错误: " + formatted;
+            return new ToolOutput("MCP 工具返回错误: " + output.text(), output.imageParts());
         }
-        return formatted;
+        return output;
     }
 
     /**

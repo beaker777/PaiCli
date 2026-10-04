@@ -1,4 +1,6 @@
-package com.paicode.runtime;
+package com.paicode.runtime.service.cancel;
+
+import com.paicode.runtime.entity.CancellationToken;
 
 import java.util.concurrent.atomic.AtomicReference;
 

@@ -9,5 +9,5 @@ import java.util.function.Function;
  * @Date 2026/9/26 01:52
  * @Description MCP Tool
  */
-public record McpRegisteredTool(McpToolDescription description, Function<String, String> invoker) {
+public record McpRegisteredTool(McpToolDescription description, Function<String, ToolOutput> invoker) {
 }

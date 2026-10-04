@@ -19,12 +19,15 @@ import com.paicode.cli.service.command.CliCommandParser;
 import com.paicode.cli.service.command.SkillCommandHandler;
 import com.paicode.cli.service.complete.PaiCodeCompleter;
 import com.paicode.config.PaiCodeConfig;
+import com.paicode.config.entity.ProviderConfig;
 import com.paicode.hitl.entity.ApprovalPolicy;
 import com.paicode.hitl.service.HitlToolRegistry;
 import com.paicode.hitl.service.handler.HitlHandler;
 import com.paicode.hitl.service.handler.impl.RendererHitlHandler;
 import com.paicode.hitl.service.handler.impl.SwitchableHitlHandler;
 import com.paicode.hitl.service.handler.impl.TerminalHitlHandler;
+import com.paicode.image.entity.GrabResult;
+import com.paicode.image.service.ClipboardImage;
 import com.paicode.llm.service.model.LlmClient;
 import com.paicode.llm.service.model.factory.LlmClientFactory;
 import com.paicode.mcp.constant.McpServerStatus;
@@ -44,8 +47,12 @@ import com.paicode.rag.service.retrieve.SearchResultFormatter;
 import com.paicode.renderer.service.manage.Renderer;
 import com.paicode.renderer.service.manage.factory.RendererFactory;
 import com.paicode.renderer.service.manage.impl.InlineRenderer;
-import com.paicode.runtime.CancellationContext;
-import com.paicode.runtime.CancellationToken;
+import com.paicode.runtime.service.api.RuntimeApiServer;
+import com.paicode.runtime.service.api.RuntimeThreadStore;
+import com.paicode.runtime.service.cancel.CancellationContext;
+import com.paicode.runtime.entity.CancellationToken;
+import com.paicode.runtime.service.task.DurableTaskManager;
+import com.paicode.runtime.service.task.TaskCommandFormatter;
 import com.paicode.skill.service.buffer.SkillContextBuffer;
 import com.paicode.skill.service.extract.SkillBuiltinExtractor;
 import com.paicode.skill.service.manage.SkillRegistry;
@@ -53,6 +60,7 @@ import com.paicode.skill.service.manage.SkillStateStore;
 import com.paicode.snapshot.entity.RestoreResult;
 import com.paicode.snapshot.entity.TurnSnapshot;
 import com.paicode.snapshot.service.SnapshotService;
+import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.tui.service.manage.TuiBootstrap;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.*;
@@ -67,8 +75,11 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.paicode.cli.entity.SlashCommandHint.slashCommandHints;
 
@@ -114,6 +125,13 @@ public class Main {
             """;
 
     public static void main(String[] args) throws Exception {
+        configureAwtForCli();
+        if (isRuntimeServeCommand(args)) {
+            configureLogging();
+            startRuntimeApiAndBlock(args);
+            return;
+        }
+
         printBanner();
         configureLogging();
 
@@ -122,9 +140,10 @@ public class Main {
         LlmClient llmClient = LlmClientFactory.createFromConfig(config);
         if (llmClient == null) {
             System.err.println("错误: 未找到 API_KEY");
-            System.err.println("请在 .env 文件中添加 GLM_API_KEY, DEEPSEEK_API_KEY 或 STEP_API_KEY");
+            System.err.println("请在 .env 文件中添加 GLM_API_KEY, DEEPSEEK_API_KEY, STEP_API_KEY 或 KIMI_API_KEY");
             System.exit(1);
         }
+        AtomicReference<LlmClient> llmClientRef = new AtomicReference<>(llmClient);
 
         System.out.println("✅ 已加载模型: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")\n");
 
@@ -216,12 +235,18 @@ public class Main {
             hitlToolRegistry.setSkillContextBuffer(skillContextBuffer);
             System.out.println(SkillCommandHandler.startupSummary(skillRegistry));
 
+            // task 管理器启动
+            DurableTaskManager taskManager = openTaskManager(llmClientRef);
+            taskManager.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(taskManager::close, "paicode-task-shutdown"));
+
             // 默认使用 ReAct 模式
             Agent reactAgent = new Agent(llmClient, hitlToolRegistry);
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             reactAgent.setSkillRegistry(skillRegistry);
             reactAgent.setSkillContextBuffer(skillContextBuffer);
             System.out.println("使用 ReAct 模式\n");
+            printStartupHints();
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
 
@@ -252,11 +277,9 @@ public class Main {
             boolean spaciousPrompt = false;
             if (renderer instanceof InlineRenderer inline) {
                 bindCtrlOToFoldableBlocks(lineReader, inline);
-                spaciousPrompt = inline.hasStatusBar();
             }
-
-            // 输出命令目录
-            printStartupHints();
+            spaciousPrompt = defaultSpaciousPrompt(spaciousPrompt);
+            bindCtrlVToClipboardImage(lineReader);
 
             while (true) {
                 // 获取用户输入
@@ -347,23 +370,30 @@ public class Main {
                         continue;
                     }
                     case SWITCH_MODEL -> {
-                        String provider = command.payload();
-                        if (provider == null || provider.isBlank()) {
+                        String selection = command.payload();
+                        if (selection == null || selection.isEmpty()) {
                             System.out.println("🤖 当前模型: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
-                            System.out.println("   可用模型：glm, deepseek, step");
+                            System.out.println("   可用模型: glm, deepseek, step, kimi");
                             System.out.println("   /model glm      - 切换到 GLM-5.1");
+                            System.out.println("   /model glm-5v-turbo - 切换到 GLM-5V-Turbo 多模态");
                             System.out.println("   /model deepseek - 切换到 DeepSeek V4");
-                            System.out.println("   /model step     - 切换到阶跃星辰 StepFun\n");
+                            System.out.println("   /model step     - 切换到阶跃星辰 StepFun");
+                            System.out.println("   /model kimi     - 切换到 Kimi K2.6\n");
                         } else {
-                            LlmClient newClient = LlmClientFactory.create(provider, config);
+                            ModelSelection target = resolveModelSelection(selection);
+                            if (target.explicitModel()) {
+                                ensureProviderConfig(config, target.provider()).setModel(target.model());
+                            }
+
+                            LlmClient newClient = LlmClientFactory.create(target.provider(), config);
                             if (newClient == null) {
-                                System.out.println("❌ 切换失败：未配置 " + provider + " 的 API Key\n");
+                                System.out.println("❌ 切换失败：未配置 " + target.provider() + " 的 API Key\n");
                             } else {
                                 llmClient = newClient;
-                                config.setDefaultProvider(provider);
+                                llmClientRef.set(newClient);
+                                config.setDefaultProvider(target.provider());
                                 config.save();
                                 reactAgent.setLlmClient(llmClient);
-
                                 System.out.println("✅ 已切换到: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
                                 System.out.println("   上下文策略: " + reactAgent.getMemoryManager().getContextProfile().summary());
                                 System.out.println("   对话上下文已保留，使用 /clear 可清空\n");
@@ -492,6 +522,10 @@ public class Main {
                                 hitlToolRegistry,
                                 hitlHandler
                         ));
+                        continue;
+                    }
+                    case TASK -> {
+                        printMcpCommandResult(TaskCommandFormatter.handle(taskManager, command.payload()));
                         continue;
                     }
                     case INDEX_CODE -> {
@@ -678,6 +712,77 @@ public class Main {
             CancellationContext.clear(token);
             executor.shutdownNow();
         }
+    }
+
+    private static boolean isRuntimeServeCommand(String[] args) {
+        return args != null
+                && args.length >= 1
+                && "serve".equalsIgnoreCase(args[0])
+                && java.util.Arrays.stream(args).anyMatch("--http"::equalsIgnoreCase);
+    }
+
+    private static void startRuntimeApiAndBlock(String[] args) {
+        PaiCodeConfig config = PaiCodeConfig.load();
+        LlmClient client = LlmClientFactory.createFromConfig(config);
+        if (client == null) {
+            System.err.println("❌ 错误: 未找到可用的 API Key");
+            System.exit(1);
+        }
+
+        int port = parseServePort(args, 8080);
+        try {
+            RuntimeThreadStore store = new RuntimeThreadStore(RuntimeThreadStore.defaultDbPath());
+            RuntimeApiServer server = new RuntimeApiServer(
+                    store,
+                    prompt -> runHeadlessTask(prompt, client),
+                    port,
+                    RuntimeApiServer.configuredApiKey());
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                server.close();
+                store.close();
+            }, "paicode-runtime-api-shutdown"));
+            server.start();
+
+            System.out.println("✅ PaiCode Runtime API 已启动: http://127.0.0.1:" + server.port());
+            System.out.println("   认证: Authorization: Bearer <PAICode_RUNTIME_API_KEY>");
+            new CountDownLatch(1).await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            System.err.println("❌ Runtime API 启动失败: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
+    private static String runHeadlessTask(String prompt, LlmClient llmClient) {
+        ToolRegistry registry = new ToolRegistry();
+        registry.setProjectPath(Path.of(".").toAbsolutePath().normalize().toString());
+        Agent agent = new Agent(llmClient, registry);
+        return agent.run(prompt);
+    }
+
+    private static DurableTaskManager openTaskManager(AtomicReference<LlmClient> llmClientRef) {
+        try {
+            return DurableTaskManager.openDefault(prompt -> runHeadlessTask(prompt, llmClientRef.get()));
+        } catch (Exception e) {
+            throw new IllegalStateException("后台任务管理器初始化失败: " + e.getMessage(), e);
+        }
+    }
+
+    private static int parseServePort(String[] args, int defaultPort) {
+        if (args == null) {
+            return defaultPort;
+        }
+        for (int i = 0; i < args.length - 1; i++) {
+            if ("--port".equalsIgnoreCase(args[i])) {
+                try {
+                    return Integer.parseInt(args[i + 1]);
+                } catch (NumberFormatException ignored) {
+                    return defaultPort;
+                }
+            }
+        }
+        return defaultPort;
     }
 
     private static void printSnapshotCommand(SnapshotService snapshotService, String payload) {
@@ -1366,6 +1471,56 @@ public class Main {
         return new McpConfigBootstrapResult(false, "");
     }
 
+    static boolean defaultSpaciousPrompt(boolean statusBarAvailable) {
+        return false;
+    }
+
+    static void configureAwtForCli() {
+        if (!isMacOs()) {
+            return;
+        }
+        System.setProperty("java.awt.headless", "true");
+    }
+
+    static boolean isMacOs() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
+    }
+
+    static ModelSelection resolveModelSelection(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        String normalized = value.toLowerCase(Locale.ROOT);
+
+        return switch (normalized) {
+            case "glm" -> new ModelSelection("glm", null, false);
+            case "deepseek" -> new ModelSelection("deepseek", null, false);
+            case "step", "stepfun", "step-fun" -> new ModelSelection("step", null, false);
+            case "kimi", "moonshot", "moonshotai", "moonshot-ai" -> new ModelSelection("kimi", null, false);
+            default -> {
+                if (normalized.startsWith("glm-")) {
+                    yield new ModelSelection("glm", value, true);
+                }
+                if (normalized.startsWith("deepseek")) {
+                    yield new ModelSelection("deepseek", value, true);
+                }
+                if (normalized.startsWith("step")) {
+                    yield new ModelSelection("step", value, true);
+                }
+                if (normalized.startsWith("kimi-") || normalized.startsWith("moonshot-")) {
+                    yield new ModelSelection("kimi", value, true);
+                }
+                yield new ModelSelection(normalized, null, false);
+            }
+        };
+    }
+
+    private static ProviderConfig ensureProviderConfig(PaiCodeConfig config, String provider) {
+        if (config.getProviders() == null) {
+            config.setProviders(new LinkedHashMap<>());
+        }
+
+        return config.getProviders().computeIfAbsent(provider, ignored -> new ProviderConfig());
+    }
+
     private static void printBanner() {
         System.out.println("╔══════════════════════════════════════════════════════════╗");
         System.out.println("║                                                          ║");
@@ -1395,7 +1550,6 @@ public class Main {
                 "输入你的问题或任务",
                 "输入 '/' 查看命令",
                 "输入 '@server:protocol://path' 可显式引用 MCP resource",
-                "输入 '/skill list' 查看可用 skill；任务匹配时 LLM 会自动 load_skill 加载完整指引",
                 "任务运行中按 ESC 取消当前任务",
                 "默认模式是 ReAct"
         );
@@ -1504,6 +1658,33 @@ public class Main {
             KeyMap<org.jline.reader.Binding> map = lineReader.getKeyMaps().get(mapName);
             if (map != null) {
                 map.bind(ref, ctrlO);
+            }
+        }
+    }
+
+    static void bindCtrlVToClipboardImage(LineReader lineReader) {
+        if (lineReader == null) {
+            return;
+        }
+        lineReader.getWidgets().put("paicode-paste-clipboard-image", () -> {
+            GrabResult grab = ClipboardImage.grab();
+            if (!grab.ok()) {
+                lineReader.printAbove("⚠️ Ctrl+V 抓图失败: " + grab.error());
+                lineReader.callWidget(LineReader.REDISPLAY);
+                return true;
+            }
+            String token = "@image:<" + grab.path().toAbsolutePath() + "> ";
+            lineReader.getBuffer().write(token);
+            lineReader.printAbove("✅ 已接收剪贴板图片: " + ClipboardImage.describe(grab.path()));
+            lineReader.callWidget(LineReader.REDISPLAY);
+            return true;
+        });
+        Reference ref = new Reference("paicode-paste-clipboard-image");
+        String ctrlV = String.valueOf((char) 22);  // Ctrl+V (SYN)
+        for (String mapName : new String[]{LineReader.MAIN, LineReader.EMACS, LineReader.VIINS}) {
+            KeyMap<org.jline.reader.Binding> map = lineReader.getKeyMaps().get(mapName);
+            if (map != null) {
+                map.bind(ref, ctrlV);
             }
         }
     }

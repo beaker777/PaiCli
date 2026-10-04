@@ -1,16 +1,31 @@
 package com.paicode.tool.entity;
 
+import com.paicode.llm.entity.ContentPart;
+
+import java.util.List;
+
 /**
  * @Author beaker
  * @Date 2026/9/23 18:55
  * @Description 工具执行结果
  */
 public record ToolExecutionResult(String id, String name, String argumentsJson,
-                                  String result, long elapsedMillis, boolean timedOut) {
+                                  String result, long elapsedMillis, boolean timedOut,
+                                  List<ContentPart> imageParts) {
+
+    public static ToolExecutionResult completed(ToolInvocation invocation, ToolOutput output, long elapsedMillis) {
+        return new ToolExecutionResult(
+                invocation.id(),
+                invocation.name(),
+                invocation.argumentsJson(),
+                output == null ? "" : output.text(),
+                elapsedMillis,
+                false,
+                output == null ? List.of() : output.imageParts());
+    }
 
     public static ToolExecutionResult completed(ToolInvocation invocation, String result, long elapsedMillis) {
-        return new ToolExecutionResult(invocation.id(), invocation.name(), invocation.argumentsJson(),
-                result, elapsedMillis, false);
+        return completed(invocation, ToolOutput.text(result), elapsedMillis);
     }
 
     public static ToolExecutionResult failed(ToolInvocation invocation, String message) {
@@ -24,7 +39,12 @@ public record ToolExecutionResult(String id, String name, String argumentsJson,
                 invocation.argumentsJson(),
                 "工具执行超时（" + timeoutSeconds + "秒），已取消",
                 timeoutSeconds * 1000,
-                true
+                true,
+                List.of()
         );
+    }
+
+    public boolean hasImageParts() {
+        return imageParts != null && !imageParts.isEmpty();
     }
 }
