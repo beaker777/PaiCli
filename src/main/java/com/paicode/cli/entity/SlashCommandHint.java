@@ -12,11 +12,11 @@ public record SlashCommandHint(String insertText, String display, String descrip
     public static List<SlashCommandHint> slashCommandHints() {
         return List.of(
                 new SlashCommandHint("/model", "/model", "查看当前模型"),
-                new SlashCommandHint("/model glm", "/model glm", "切换到 GLM-5.1"),
+                new SlashCommandHint("/model glm-5.1", "/model glm-5.1", "切换到 GLM-5.1"),
                 new SlashCommandHint("/model glm-5v-turbo", "/model glm-5v-turbo", "切换到 GLM-5V-Turbo 多模态"),
-                new SlashCommandHint("/model deepseek", "/model deepseek", "切换到 DeepSeek V4"),
-                new SlashCommandHint("/model step", "/model step", "切换到阶跃星辰 StepFun"),
-                new SlashCommandHint("/model kimi", "/model kimi", "切换到 Kimi K2.6"),
+                new SlashCommandHint("/model deepseek", "/model deepseek", "切换到 DeepSeek（读取配置模型）"),
+                new SlashCommandHint("/model step", "/model step", "切换到 StepFun（读取配置模型）"),
+                new SlashCommandHint("/model kimi", "/model kimi", "切换到 Kimi（读取配置模型）"),
                 new SlashCommandHint("/plan", "/plan", "下一条任务使用 Plan-and-Execute 模式"),
                 new SlashCommandHint("/plan ", "/plan <任务内容>", "直接用计划模式执行这条任务"),
                 new SlashCommandHint("/team", "/team", "下一条任务使用 Multi-Agent 协作模式"),
