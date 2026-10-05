@@ -4,32 +4,35 @@ import com.paicode.renderer.entity.StatusInfo;
 import org.jline.terminal.Terminal;
 import org.jline.utils.AttributedString;
 import org.jline.utils.AttributedStyle;
+import org.jline.utils.Status;
 
 import java.io.PrintStream;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * @Author beaker
  * @Date 2026/10/2 01:52
- * @Description 跟随输入的状态栏
+ * @Descriptio JLine 托管的底部 dock
  *
  * 状态栏紧贴在输入区下方, 而不是固定在屏幕底部, 避免出现大片空白
  */
 public class BottomStatusBar implements AutoCloseable {
 
-    private static final int STATUS_ROWS = 2;
-    private static final int STATUS_GAP_ROWS = 1;
-    private static final int ROWS_AFTER_PROMPT = STATUS_GAP_ROWS + STATUS_ROWS;
+    private static final int CONTEXT_BAR_WIDTH = 8;
+    private static final Pattern SUMMARY_RATIO = Pattern.compile("(?i)^(?:MCP|Skill)\\s+(\\d+)/(\\d+)$");
 
     private final Terminal terminal;
     private final PrintStream out;
     private volatile StatusInfo current;
+    private Status status;
     private volatile boolean started;
     private volatile boolean closed;
-    private volatile boolean rendered;
 
     public BottomStatusBar(Terminal terminal) {
         this.terminal = terminal;
@@ -41,12 +44,18 @@ public class BottomStatusBar implements AutoCloseable {
         if (started || closed) {
             return;
         }
+
+        status = Status.getStatus(terminal);
+        if (status != null) {
+            status.setBorder(true);
+        }
         started = true;
+        renderDock();
     }
 
     /** 立即触发一次重绘（不等节流间隔）。 */
     public void flushNow() {
-        // do nothing
+        renderDock();
     }
 
     /** 当前 StatusInfo 快照，供 thinking 面板等组件复用同一份格式化结果。 */
@@ -56,54 +65,24 @@ public class BottomStatusBar implements AutoCloseable {
 
     /** 在即将读取输入时，把状态区画在 prompt 下方并把光标移回 prompt 行。 */
     public void prepareInputLine() {
-        if (!started || closed) {
-            return;
-        }
-        drawInlineStatus();
+        renderDock();
     }
 
     /** 输入提交后清掉 inline 状态区和它下面的空白，让下一段 transcript 紧跟输入行。 */
     public void finishInputLine() {
-        if (!started || closed) {
-            return;
-        }
-        clearInlineStatusAndGap();
+        renderDock();
     }
 
-    private void drawInlineStatus() {
+    private void renderDock() {
         StatusInfo info = current;
-        if (info == null || closed || !started) {
+        Status dock = status;
+        if (info == null || dock == null || closed || !started) {
             return;
         }
 
         int cols = TerminalCapabilities.safeSize(terminal).getColumns();
         synchronized (out) {
-            out.print("\n".repeat(STATUS_GAP_ROWS + 1));
-            out.print(AnsiSeq.REVERSE_ON);
-            out.print(formatStatusLine(info, cols));
-            out.print(AnsiSeq.RESET);
-
-            out.print("\n");
-            out.print(AnsiSeq.DIM);
-            out.print(formatFooterLine(cols));
-            out.print(AnsiSeq.RESET);
-            out.print(AnsiSeq.moveUp(ROWS_AFTER_PROMPT));
-
-            out.print("\r");
-            out.flush();
-            rendered = true;
-        }
-    }
-
-    private void clearInlineStatusAndGap() {
-        if (!rendered) {
-            return;
-        }
-        synchronized (out) {
-            out.print("\r");
-            out.print(AnsiSeq.CLEAR_TO_EOS);
-            out.flush();
-            rendered = false;
+            dock.update(formatStatusLines(info, cols));
         }
     }
 
@@ -113,7 +92,11 @@ public class BottomStatusBar implements AutoCloseable {
             return;
         }
         closed = true;
-        clearInlineStatusAndGap();
+        Status dock = status;
+        status = null;
+        if (dock != null) {
+            dock.close();
+        }
     }
 
     public void update(StatusInfo info) {
@@ -123,40 +106,41 @@ public class BottomStatusBar implements AutoCloseable {
     public static List<AttributedString> formatStatusLines(StatusInfo info, int cols) {
         return List.of(
                 new AttributedString(formatStatusLine(info, cols), AttributedStyle.DEFAULT.inverse()),
-                new AttributedString(formatFooterLine(cols), AttributedStyle.DEFAULT.faint())
+                new AttributedString(formatFooterLine(info, cols), AttributedStyle.DEFAULT.faint())
         );
     }
 
     public static String formatStatusLine(StatusInfo info, int cols) {
-        String model = info.model() == null ? "—" : info.model();
-        String phase = info.phase() == null || info.phase().isBlank() ? "idle" : info.phase();
-        String tokens = formatTokens(info.totalTokens()) + "/" + formatTokens(info.contextWindow());
-        String hitl = info.hitlEnabled() ? "HITL ON" : "HITL OFF";
+        String mode = info.hitlEnabled() ? "HITL Ctrl+Y for YOLO" : "YOLO Ctrl+Y to enable HITL";
+        String right = environmentSummary(info);
+        if (right.isBlank()) {
+            return fitToColumns(" " + mode, cols);
+        }
+        int gap = Math.max(1, cols - visibleLength(mode) - visibleLength(right) - 2);
+        return fitToColumns(" " + mode + " ".repeat(gap) + right + " ", cols);
+    }
 
-        StringBuilder sb = new StringBuilder(" PaiCode");
+    public static String formatFooterLine(StatusInfo info, int cols) {
+        String model = info.model() == null || info.model().isBlank() ? "Auto Model" : info.model().trim();
+        String phase = info.phase() == null || info.phase().isBlank() ? "idle" : info.phase().trim();
+        StringBuilder sb = new StringBuilder(" Auto Model · ");
+        sb.append(model);
         appendField(sb, phase);
-        appendField(sb, info.mcpSummary());
-        appendField(sb, info.skillSummary());
-        appendField(sb, hitl);
-        appendField(sb, model);
-        appendField(sb, "ctx " + tokens);
+        appendField(sb, contextSegment(info));
         if (info.inputTokens() > 0 || info.outputTokens() > 0 || info.cachedInputTokens() > 0) {
             appendField(sb, "in " + formatTokens(info.inputTokens()) + " out " + formatTokens(info.outputTokens()));
             if (info.cachedInputTokens() > 0) {
                 sb.append(" cache ").append(formatTokens(info.cachedInputTokens()));
             }
             if (info.estimatedCost() != null && !info.estimatedCost().isBlank()) {
-                sb.append("  ").append(info.estimatedCost());
+                sb.append(" · ").append(info.estimatedCost().trim());
             }
         }
         if (info.elapsedMillis() > 0) {
-            sb.append("  ").append(formatElapsed(info.elapsedMillis()));
+            appendField(sb, formatElapsed(info.elapsedMillis()));
         }
+        appendField(sb, compactCwd());
         return fitToColumns(sb.toString(), cols);
-    }
-
-    private static String formatFooterLine(int cols) {
-        return fitToColumns(" Auto Model · / commands · @path/@image · Ctrl+O fold · ESC clear", cols);
     }
 
     private static StatusInfo mergeEnvironment(StatusInfo next, StatusInfo previous) {
@@ -192,6 +176,62 @@ public class BottomStatusBar implements AutoCloseable {
             return safe.substring(0, cols);
         }
         return safe + " ".repeat(cols - safe.length());
+    }
+
+    private static String environmentSummary(StatusInfo info) {
+        String mcp = formatEnvironment(info.mcpSummary(), "MCP server", "MCP servers");
+        String skill = formatEnvironment(info.skillSummary(), "skill", "skills");
+        if (mcp.isBlank()) {
+            return skill;
+        }
+        if (skill.isBlank()) {
+            return mcp;
+        }
+        return mcp + " · " + skill;
+    }
+
+    private static String formatEnvironment(String raw, String singular, String plural) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String value = raw.trim();
+        Matcher matcher = SUMMARY_RATIO.matcher(value);
+        if (!matcher.matches()) {
+            return value;
+        }
+        int active = Integer.parseInt(matcher.group(1));
+        int total = Integer.parseInt(matcher.group(2));
+        if (active == total) {
+            return total + " " + (total == 1 ? singular : plural);
+        }
+        return active + "/" + total + " " + plural;
+    }
+
+    private static String contextSegment(StatusInfo info) {
+        long total = Math.max(0L, info.totalTokens());
+        long window = Math.max(0L, info.contextWindow());
+        int percent = window <= 0L ? 0 : (int) Math.min(100L, Math.round(total * 100.0 / window));
+        int filled = window <= 0L ? 0 : (int) Math.min(CONTEXT_BAR_WIDTH,
+                Math.round(total * CONTEXT_BAR_WIDTH * 1.0 / window));
+        String bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, CONTEXT_BAR_WIDTH - filled));
+        return "ctx " + bar + " " + percent + "% (" + formatTokens(total) + "/" + formatTokens(window) + ")";
+    }
+
+    private static String compactCwd() {
+        String cwd = System.getProperty("user.dir");
+        if (cwd == null || cwd.isBlank()) {
+            return "";
+        }
+        String normalized = Path.of(cwd).toAbsolutePath().normalize().toString();
+        String home = System.getProperty("user.home");
+        if (home != null && !home.isBlank() && normalized.startsWith(home)) {
+            normalized = "~" + normalized.substring(home.length());
+        }
+        return normalized;
+    }
+
+    private static int visibleLength(String text) {
+        return text == null ? 0 : text.length();
     }
 
     private static String formatTokens(long t) {

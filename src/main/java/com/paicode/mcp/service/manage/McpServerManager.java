@@ -65,11 +65,11 @@ public class McpServerManager implements AutoCloseable {
     /**
      * 并行启动 mcp servers
      */
-    public void startAll() {
-        startAll(null);
+    public void startAll(PrintStream progressOut) {
+        startAll(progressOut, null);
     }
 
-    public void startAll(PrintStream progressOut) {
+    public void startAll(PrintStream progressOut, Duration maxWait) {
         List<McpServer> targets = servers.values().stream()
                 .filter(server -> !server.config().isDisabled())
                 .toList();
@@ -92,13 +92,49 @@ public class McpServerManager implements AutoCloseable {
             List<CompletableFuture<Void>> futures = targets.stream()
                     .map(server -> CompletableFuture.runAsync(() -> start(server), executor))
                     .toList();
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+            if (maxWait == null || maxWait.isZero() || maxWait.isNegative()) {
+                all.join();
+            } else {
+                try {
+                    all.get(Math.max(1, maxWait.toMillis()), TimeUnit.MILLISECONDS);
+                } catch (TimeoutException e) {
+                    printStartupTimeout(targets, progressOut, maxWait);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    printStartupTimeout(targets, progressOut, maxWait);
+                } catch (Exception e) {
+                    all.join();
+                }
+            }
         } finally {
             if (progressPrinter != null) {
                 progressPrinter.interrupt();
             }
             executor.shutdown();
         }
+    }
+
+    private void printStartupTimeout(List<McpServer> targets, PrintStream out, Duration maxWait) {
+        if (out == null) {
+            return;
+        }
+        List<McpServer> stillStarting = targets.stream()
+                .filter(server -> server.status() == McpServerStatus.STARTING)
+                .sorted(Comparator.comparing(McpServer::name))
+                .toList();
+        if (stillStarting.isEmpty()) {
+            return;
+        }
+        String names = stillStarting.stream()
+                .map(McpServer::name)
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("");
+        long displaySeconds = Math.max(1, (long) Math.ceil(maxWait.toMillis() / 1000.0));
+        out.printf("⚠️ MCP 启动超过 %ds，先进入 CLI；后台继续启动: %s%n",
+                displaySeconds, names);
+        out.println("   可用 /mcp 查看最新状态，或 /mcp logs <name> 查看日志。");
+        out.flush();
     }
 
     private Thread startProgressPrinter(List<McpServer> targets, PrintStream out, Duration interval) {
@@ -311,6 +347,8 @@ public class McpServerManager implements AutoCloseable {
                         server.name(), server.transportName(), server.tools().size()));
             } else if (server.status() == McpServerStatus.DISABLED) {
                 sb.append(String.format("   ○ %-14s %-6s disabled%n", server.name(), server.transportName()));
+            } else if (server.status() == McpServerStatus.STARTING) {
+                sb.append(String.format("   … %-14s %-6s starting%n", server.name(), server.transportName()));
             } else {
                 sb.append(String.format("   ✗ %-14s %-6s 启动失败: %s%n",
                         server.name(), server.transportName(), server.errorMessage()));
