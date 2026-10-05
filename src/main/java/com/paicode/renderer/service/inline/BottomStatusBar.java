@@ -2,8 +2,11 @@ package com.paicode.renderer.service.inline;
 
 import com.paicode.renderer.entity.StatusInfo;
 import org.jline.terminal.Terminal;
+import org.jline.utils.AttributedString;
+import org.jline.utils.AttributedStyle;
 
 import java.io.PrintStream;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +47,11 @@ public class BottomStatusBar implements AutoCloseable {
     /** 立即触发一次重绘（不等节流间隔）。 */
     public void flushNow() {
         // do nothing
+    }
+
+    /** 当前 StatusInfo 快照，供 thinking 面板等组件复用同一份格式化结果。 */
+    public StatusInfo currentStatus() {
+        return current;
     }
 
     /** 在即将读取输入时，把状态区画在 prompt 下方并把光标移回 prompt 行。 */
@@ -112,7 +120,14 @@ public class BottomStatusBar implements AutoCloseable {
         this.current = mergeEnvironment(info, current);
     }
 
-    private static String formatStatusLine(StatusInfo info, int cols) {
+    public static List<AttributedString> formatStatusLines(StatusInfo info, int cols) {
+        return List.of(
+                new AttributedString(formatStatusLine(info, cols), AttributedStyle.DEFAULT.inverse()),
+                new AttributedString(formatFooterLine(cols), AttributedStyle.DEFAULT.faint())
+        );
+    }
+
+    public static String formatStatusLine(StatusInfo info, int cols) {
         String model = info.model() == null ? "—" : info.model();
         String phase = info.phase() == null || info.phase().isBlank() ? "idle" : info.phase();
         String tokens = formatTokens(info.totalTokens()) + "/" + formatTokens(info.contextWindow());

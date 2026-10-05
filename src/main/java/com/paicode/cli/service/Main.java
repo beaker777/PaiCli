@@ -639,9 +639,11 @@ public class Main {
                 }
 
                 // 运行 Agent, 调用 Mcp Resource
+                String submittedInput = input;
                 input = mentionExpander.expand(input);
                 ui.println();
                 renderer.beginTurn();
+                printSubmittedPrompt(ui, submittedInput);
 
                 String taskInput = input;
                 Callable<String> runTask;
@@ -749,6 +751,15 @@ public class Main {
             CancellationContext.clear(token);
             executor.shutdownNow();
         }
+    }
+
+    static void printSubmittedPrompt(PrintStream out, String input) {
+        String visible = input == null ? "" : input.strip();
+        if (visible.isEmpty()) {
+            return;
+        }
+        out.println(AnsiStyle.subtle("* ") + visible);
+        out.println();
     }
 
     private static boolean isRuntimeServeCommand(String[] args) {
