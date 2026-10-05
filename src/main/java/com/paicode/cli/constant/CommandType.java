@@ -22,6 +22,9 @@ public enum CommandType {
     // 清空记忆
     CLEAR,
 
+    // 清空历史
+    HISTORY_CLEAR,
+
     // 切换模型
     SWITCH_MODEL,
 

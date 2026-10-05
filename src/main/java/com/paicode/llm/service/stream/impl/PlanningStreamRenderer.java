@@ -4,16 +4,23 @@ import com.paicode.llm.service.stream.StreamListener;
 import com.paicode.utils.AnsiStyle;
 import com.paicode.utils.TerminalMarkdownRenderer;
 
+import java.io.PrintStream;
+
 /**
  * @Author beaker
  * @Date 2026/9/19 20:27
  * @Description plan 流式输出渲染器
  */
-public class PlanningStreamRender implements StreamListener {
+public class PlanningStreamRenderer implements StreamListener {
 
+    private final PrintStream out;
     private TerminalMarkdownRenderer reasoningRender;
     private boolean reasoningStarted;
     private boolean streamed;
+
+    public PlanningStreamRenderer(PrintStream out) {
+        this.out = out == null ? System.out : out;
+    }
 
     @Override
     public void onReasoningDelta(String delta) {
@@ -22,14 +29,14 @@ public class PlanningStreamRender implements StreamListener {
         }
 
         if (!reasoningStarted) {
-            System.out.println(AnsiStyle.heading("规划思考"));
-            reasoningRender = new TerminalMarkdownRenderer(System.out);
+            out.println(AnsiStyle.heading("🧠 规划思考"));
+            reasoningRender = new TerminalMarkdownRenderer(out);
             reasoningStarted = true;
             streamed = true;
         }
 
         reasoningRender.append(delta);
-        System.out.flush();
+        out.flush();
     }
 
     public void finish() {
@@ -37,7 +44,7 @@ public class PlanningStreamRender implements StreamListener {
             if (reasoningRender != null) {
                 reasoningRender.finish();
             }
-            System.out.println("\n");
+            out.println("\n");
         }
     }
 }

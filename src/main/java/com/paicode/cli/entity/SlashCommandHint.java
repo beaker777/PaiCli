@@ -60,6 +60,7 @@ public record SlashCommandHint(String insertText, String display, String descrip
                 new SlashCommandHint("/search ", "/search <查询>", "语义检索代码"),
                 new SlashCommandHint("/graph ", "/graph <类名>", "查看代码关系图谱"),
                 new SlashCommandHint("/clear", "/clear", "清空当前对话历史"),
+                new SlashCommandHint("/history clear", "/history clear", "清空本机输入历史"),
                 new SlashCommandHint("/context", "/context", "查看上下文和记忆状态"),
                 new SlashCommandHint("/memory", "/memory", "查看记忆状态"),
                 new SlashCommandHint("/memory clear", "/memory clear", "清空长期记忆"),

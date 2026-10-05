@@ -183,14 +183,12 @@ public class SubAgent {
 
         SubAgentStreamRenderer streamRenderer = new SubAgentStreamRenderer(name , role, out);
 
-        long startNanos = System.nanoTime();
         AgentBudget budget = AgentBudget.fromLlmClient(llmClient);
 
         while (true) {
             ExitReason exitReason = budget.check();
             if (exitReason != ExitReason.WITHIN_BUDGET) {
                 streamRenderer.finish();
-                out.println(formatTokenStats(budget, startNanos));
                 String description = budget.describeExit(exitReason);
 
                 log.warn("[{}] run exhausted budget: reason={}, iteration={}, tokens={}/{}",
@@ -243,7 +241,6 @@ public class SubAgent {
                 conversationHistory.add(Message.assistant(response.content()));
 
                 streamRenderer.finish();
-                out.println(formatTokenStats(budget, startNanos));
                 return AgentMessage.result(name, role, response.content());
             } catch (Exception e) {
                 log.error("[{}] LLM call failed", name, e);
@@ -411,15 +408,6 @@ public class SubAgent {
         } catch (Exception e) {
             return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
         }
-    }
-
-    private String formatTokenStats(AgentBudget budget, long startNanos) {
-        return TokenUsageFormatter.format(
-                llmClient,
-                budget.totalInputTokens(),
-                budget.totalOutputTokens(),
-                budget.totalCachedInputTokens(),
-                startNanos);
     }
 
     /**

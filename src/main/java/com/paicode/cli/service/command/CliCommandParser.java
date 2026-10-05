@@ -35,6 +35,10 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.CLEAR, null);
         }
 
+        if (trimmed.equalsIgnoreCase("/history clear")) {
+            return new ParsedCommand(CommandType.HISTORY_CLEAR, null);
+        }
+
         if (trimmed.equalsIgnoreCase("/config")) {
             return new ParsedCommand(CommandType.CONFIG, null);
         }

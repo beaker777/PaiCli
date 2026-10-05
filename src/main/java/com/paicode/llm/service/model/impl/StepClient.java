@@ -1,5 +1,6 @@
 package com.paicode.llm.service.model.impl;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.paicode.llm.service.model.AbstractOpenaiCompatibleClient;
 
 /**
@@ -59,6 +60,16 @@ public class StepClient extends AbstractOpenaiCompatibleClient {
     @Override
     public String promptCacheMode() {
         return "step-prefix-cache";
+    }
+
+    @Override
+    protected void customizeRequestBody(ObjectNode requestBody) {
+        // StepFun 默认 reasoning_format=general，会返回 `reasoning` 字段；
+        // deepseek-style 让它返回 PaiCode/DeepSeek 兼容的 `reasoning_content`。
+        requestBody.put("reasoning_format", "deepseek-style");
+        if (model != null && model.contains("2603")) {
+            requestBody.put("reasoning_effort", "high");
+        }
     }
 
     private static String toChatCompletionsUrl(String baseUrl) {

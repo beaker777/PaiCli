@@ -32,10 +32,13 @@ public class AnsiSeq {
     public static final String RESET_SCROLL_REGION = ESC + "[r";
 
     // === 文本样式 ===
+    /** 开启反白, 即交换文本和背景的颜色 */
     public static final String REVERSE_ON = ESC + "[7m";
+    /** 关闭反白, 即交换文本和背景的颜色 */
     public static final String REVERSE_OFF = ESC + "[27m";
     public static final String RESET = ESC + "[0m";
     public static final String BOLD = ESC + "[1m";
+    /** 开启暗色模式 */
     public static final String DIM = ESC + "[2m";
 
     private AnsiSeq() {

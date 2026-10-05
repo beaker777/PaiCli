@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.paicode.memory.entity.MemoryEntry;
 import com.paicode.memory.constant.MemoryType;
 import com.paicode.memory.service.query.MemoryQueryTokenizer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
@@ -21,6 +23,7 @@ import java.util.stream.Collectors;
  */
 public class LongTermMemory implements Memory {
 
+    private static final Logger log = LoggerFactory.getLogger(LongTermMemory.class);
     private static final String STORAGE_DIR_PROPERTY = "paicode.memory.dir";
     private static final String STORAGE_DIR_ENV = "PAICODE_MEMORY_DIR";
     private static final String STORAGE_FILE = "long_term_memory.json";
@@ -156,9 +159,9 @@ public class LongTermMemory implements Memory {
                 }
             }
 
-            System.out.println("加载了 " + entries.size() + " 条长期记忆");
+            log.info("加载了 " + entries.size() + " 条长期记忆");
         } catch (IOException e) {
-            System.out.println("加载长期记忆失败: " + e.getMessage());
+            log.warn("加载长期记忆失败: " + e.getMessage());
         }
     }
 
@@ -172,7 +175,7 @@ public class LongTermMemory implements Memory {
                     .toList();
             mapper.writeValue(storageFile, dataList);
         } catch (IOException e) {
-            System.out.println("长期记忆持久化失败: " + e.getMessage());
+            log.warn("长期记忆持久化失败: " + e.getMessage());
         }
     }
 

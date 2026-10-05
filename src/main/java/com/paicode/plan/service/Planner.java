@@ -6,8 +6,7 @@ import com.paicode.llm.entity.ChatResponse;
 import com.paicode.llm.entity.Message;
 import com.paicode.llm.service.log.LlmTraceLogger;
 import com.paicode.llm.service.model.LlmClient;
-import com.paicode.llm.service.model.impl.DeepSeekClient;
-import com.paicode.llm.service.stream.impl.PlanningStreamRender;
+import com.paicode.llm.service.stream.impl.PlanningStreamRenderer;
 import com.paicode.plan.constant.TaskStatus;
 import com.paicode.plan.constant.TaskType;
 import com.paicode.plan.entity.ExecutionPlan;
@@ -19,7 +18,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.*;
+import java.io.PrintStream;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * @Author beaker
@@ -31,15 +34,22 @@ public class Planner {
     private static final Logger log = LoggerFactory.getLogger(Planner.class);
 
     private final LlmClient llmClient;
+    private final PrintStream out;
     private final ObjectMapper mapper = new ObjectMapper();
     private final PromptAssembler promptAssembler = PromptAssembler.createDefault();
 
     public Planner(LlmClient llmClient) {
-        this.llmClient = llmClient;
+        this(llmClient, System.out);
     }
 
+    public Planner(LlmClient llmClient, PrintStream out) {
+        this.llmClient = llmClient;
+        this.out = out == null ? System.out : out;
+    }
+
+
     public ExecutionPlan createPlan(String goal) throws IOException {
-        System.out.println("正在规划任务: " + goal + "\n");
+        out.println("正在规划任务: " + goal + "\n");
 
         // 创建简单任务
         if (isSimpleGoal(goal)) {
@@ -53,7 +63,7 @@ public class Planner {
         );
 
         // 调用 LLM
-        PlanningStreamRender streamRender = new PlanningStreamRender();
+        PlanningStreamRenderer streamRender = new PlanningStreamRenderer(out);
         ChatResponse response = llmClient.chat(messages, null, streamRender);
         LlmTraceLogger.logReasoning(log, "planner", llmClient, response.reasoningContent());
         streamRender.finish();
@@ -148,7 +158,7 @@ public class Planner {
     }
 
     public ExecutionPlan replan(ExecutionPlan failedPlan, String failureReason) throws IOException {
-        System.out.println("重新规划, 原因: " + failureReason + "\n");
+        out.println("重新规划, 原因: " + failureReason + "\n");
 
         StringBuilder context = new StringBuilder();
         context.append("原任务: ").append(failedPlan.getGoal()).append("\n");

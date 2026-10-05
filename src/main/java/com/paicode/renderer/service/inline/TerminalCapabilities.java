@@ -10,7 +10,7 @@ import org.jline.terminal.Terminal;
  */
 public class TerminalCapabilities {
 
-    /** 终端是否能渲染 ANSI 转义序列（颜色、光标控制、滚动区域等）。 */
+    /** 终端是否能渲染 ANSI 转义序列（颜色、光标控制、inline status 等）。 */
     public static boolean supportsAnsi(Terminal terminal) {
         if (terminal == null) {
             return false;
@@ -31,7 +31,7 @@ public class TerminalCapabilities {
     }
 
     /**
-     * 终端是否支持 DECSTBM 滚动区域（底部常驻状态栏依赖）。
+     * 终端是否适合使用 inline status bar
      * 同时校验终端尺寸合理（rows >= 5, cols >= 20）。
      */
     public static boolean supportsScrollRegion(Terminal terminal) {

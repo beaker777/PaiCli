@@ -18,6 +18,9 @@ import com.paicode.agent.PlanAndExecute.entity.PlanReviewDecision;
 import com.paicode.cli.service.command.CliCommandParser;
 import com.paicode.cli.service.command.SkillCommandHandler;
 import com.paicode.cli.service.complete.PaiCodeCompleter;
+import com.paicode.cli.service.expand.LocalPathMentionExpander;
+import com.paicode.cli.service.terminal.PaiCodeHighlighter;
+import com.paicode.cli.service.terminal.PaiCodeHistory;
 import com.paicode.config.PaiCodeConfig;
 import com.paicode.config.entity.ProviderConfig;
 import com.paicode.hitl.entity.ApprovalPolicy;
@@ -44,6 +47,7 @@ import com.paicode.rag.entity.IndexResult;
 import com.paicode.rag.entity.IndexStats;
 import com.paicode.rag.entity.SearchResult;
 import com.paicode.rag.service.retrieve.SearchResultFormatter;
+import com.paicode.renderer.entity.StatusInfo;
 import com.paicode.renderer.service.manage.Renderer;
 import com.paicode.renderer.service.manage.factory.RendererFactory;
 import com.paicode.renderer.service.manage.impl.InlineRenderer;
@@ -62,19 +66,22 @@ import com.paicode.snapshot.entity.TurnSnapshot;
 import com.paicode.snapshot.service.SnapshotService;
 import com.paicode.tool.service.register.ToolRegistry;
 import com.paicode.tui.service.manage.TuiBootstrap;
+import com.paicode.utils.AnsiStyle;
+import org.jline.console.CmdDesc;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.*;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.utils.AttributedString;
 import org.jline.utils.NonBlockingReader;
+import org.jline.widget.AutopairWidgets;
+import org.jline.widget.AutosuggestionWidgets;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.IOException;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -102,6 +109,12 @@ public class Main {
     private static final String LOG_MAX_HISTORY_PROPERTY = "paicode.log.maxHistory";
     private static final String LOG_MAX_FILE_SIZE_PROPERTY = "paicode.log.maxFileSize";
     private static final String LOG_TOTAL_SIZE_CAP_PROPERTY = "paicode.log.totalSizeCap";
+
+    // 历史文件
+    private static final String HISTORY_FILE_PROPERTY = "paicode.history.file";
+    private static final String HISTORY_SIZE_PROPERTY = "paicode.history.size";
+    private static final String HISTORY_FILE_SIZE_PROPERTY = "paicode.history.fileSize";
+    private static final String DEFAULT_HISTORY_FILE_NAME = "input.history";
 
     // terminal 处理
     private static final String BRACKETED_PASTE_BEGIN = "[200~";
@@ -132,7 +145,6 @@ public class Main {
             return;
         }
 
-        printBanner();
         configureLogging();
 
         // 加载 API Key
@@ -145,7 +157,6 @@ public class Main {
         }
         AtomicReference<LlmClient> llmClientRef = new AtomicReference<>(llmClient);
 
-        System.out.println("✅ 已加载模型: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")\n");
 
         // 使用 try-with-resource 确保 Terminal 正确关闭
         try (Terminal terminal = TerminalBuilder.builder().system(true).build()) {
@@ -161,6 +172,9 @@ public class Main {
 
             // 创建 MCP 管理器
             McpServerManager mcpServerManager = new McpServerManager(hitlToolRegistry, Path.of("."));
+
+            // 获取 skill
+            AtomicReference<SkillRegistry> skillRegistryRef = new AtomicReference<>();
 
             // 设置浏览器自动连接工具
             hitlToolRegistry.setBrowserConnector(new BrowserConnector() {
@@ -183,38 +197,47 @@ public class Main {
                 }
             });
 
-
-            // 启动 MCP Servers
-            try {
-                McpConfigBootstrapResult bootstrapResult = ensureDefaultMcpConfig(Path.of(System.getProperty("user.home")));
-                if (!bootstrapResult.message().isBlank()) {
-                    System.out.println(bootstrapResult.message());
-                }
-                mcpServerManager.loadConfiguredServers();
-                if (!mcpServerManager.servers().isEmpty()) {
-                    System.out.println("🔌 启动 MCP server（" + mcpServerManager.servers().size() + " 个）...");
-                }
-
-                mcpServerManager.startAll(System.out);
-
-                Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "paicode-mcp-shutdown"));
-                System.out.println(mcpServerManager.startupSummary());
-                System.out.println();
-            } catch (Exception e) {
-                System.out.println("⚠️ MCP 初始化失败: " + e.getMessage());
-                System.out.println("   可检查 ~/.paicode/mcp.json 或 .paicode/mcp.json\n");
-            }
-
             // 创建 lineReader
             LineReader lineReader = LineReaderBuilder.builder()
                     .terminal(terminal)
-                    .completer(new PaiCodeCompleter(mcpServerManager::resourceCandidates))
+                    .history(new PaiCodeHistory())
+                    .completer(new PaiCodeCompleter(mcpServerManager::resourceCandidates,
+                            () -> skillRegistryRef.get() == null ? List.of() : skillRegistryRef.get().allSkills()))
+                    .highlighter(new PaiCodeHighlighter())
                     .build();
             lineReader.option(LineReader.Option.BRACKETED_PASTE, true);
             lineReader.option(LineReader.Option.AUTO_LIST, true);
             lineReader.option(LineReader.Option.AUTO_MENU, true);
+            configureHistory(lineReader, Path.of(System.getProperty("user.home")));
             configureSlashCommandHint(lineReader);
+            configureJLineInteractiveWidgets(lineReader);
+
+            // JLine-first：启动输出、命令输出、Agent 流式内容都走同一条 Renderer.stream() 通道。
+            // 注意：状态区必须等首屏打印后再 start/update；否则启动期输出与输入区布局会互相抢光标。
+            Renderer renderer = RendererFactory.create(RendererFactory.resolveMode(), terminal);
+            RendererHitlHandler rendererHitl = new RendererHitlHandler(renderer, hitlHandler.isEnabled());
+            hitlHandler.setDelegate(rendererHitl);
+            if (renderer instanceof InlineRenderer inline) {
+                inline.bindLineReader(lineReader);
+            }
+            PrintStream ui = renderer.stream();
+
+            // 创建 mcp 管理器
+            String startupNote = "";
+            try {
+                McpConfigBootstrapResult bootstrapResult = ensureDefaultMcpConfig(Path.of(System.getProperty("user.home")));
+                if (!bootstrapResult.message().isBlank()) {
+                    startupNote = bootstrapResult.message();
+                }
+
+                mcpServerManager.loadConfiguredServers();
+                mcpServerManager.startAll();
+                Runtime.getRuntime().addShutdownHook(new Thread(mcpServerManager::close, "paicli-mcp-shutdown"));
+            } catch (Exception e) {
+                startupNote = "MCP 初始化失败: " + e.getMessage();
+            }
             AtMentionExpander mentionExpander = new AtMentionExpander(mcpServerManager);
+            LocalPathMentionExpander localPathMentionExpander = new LocalPathMentionExpander(Path.of("."));
 
             // Skill 系统初始化
             Path home = Path.of(System.getProperty("user.home"));
@@ -224,16 +247,15 @@ public class Main {
             try {
                 new SkillBuiltinExtractor(skillsCacheDir).extractAll();
             } catch (Exception e) {
-                System.err.println("⚠️ 内置 skill 解压失败: " + e.getMessage());
+                startupNote = appendStartupNote(startupNote, "内置 skill 解压失败: " + e.getMessage());
             }
             SkillStateStore skillStateStore = new SkillStateStore(home.resolve("/paicode/skill.json"));
             SkillRegistry skillRegistry = new SkillRegistry(skillsCacheDir, userSkillsDir, projectSkillsDir, skillStateStore);
             skillRegistry.reload();
-
+            skillRegistryRef.set(skillRegistry);
             SkillContextBuffer skillContextBuffer = new SkillContextBuffer();
             hitlToolRegistry.setSkillRegistry(skillRegistry);
             hitlToolRegistry.setSkillContextBuffer(skillContextBuffer);
-            System.out.println(SkillCommandHandler.startupSummary(skillRegistry));
 
             // task 管理器启动
             DurableTaskManager taskManager = openTaskManager(llmClientRef);
@@ -245,8 +267,9 @@ public class Main {
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             reactAgent.setSkillRegistry(skillRegistry);
             reactAgent.setSkillContextBuffer(skillContextBuffer);
-            System.out.println("使用 ReAct 模式\n");
-            printStartupHints();
+            printStartupScreen(ui, startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote));
+            renderer.start();
+            renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
 
@@ -265,14 +288,10 @@ public class Main {
             }
 
             // 启动渲染器
-            Renderer renderer = RendererFactory.create(RendererFactory.resolveMode(), terminal);
-            RendererHitlHandler rendererHitl = new RendererHitlHandler(renderer, hitlHandler.isEnabled());
-            hitlHandler.setDelegate(rendererHitl);
             reactAgent.setRenderer(renderer);
             reactAgent.setHitlEnabledSupplier(hitlHandler::isEnabled);
             reactAgent.getToolRegistry().setWriteFileObserver(
                     (path, ba) -> renderer.appendDiff(path, ba[0], ba[1]));
-            renderer.stream();
 
             boolean spaciousPrompt = false;
             if (renderer instanceof InlineRenderer inline) {
@@ -286,7 +305,7 @@ public class Main {
                 // 获取用户输入
                 PromptInput promptInput;
                 try {
-                    promptInput = readPromptInput(terminal, lineReader,
+                    promptInput = readPromptInput(terminal, lineReader, renderer,
                             nextTaskUsePlanMode || nextTaskUsePlanMode, spaciousPrompt);
                 } catch (UserInterruptException e) {
                     // ctrl + c 跳过
@@ -299,11 +318,11 @@ public class Main {
                 if (promptInput.canceled()) {
                     if (nextTaskUsePlanMode) {
                         nextTaskUsePlanMode = false;
-                        System.out.println("已取消待执行的 Plan-And-Execute, 回到默认的 React 模式. \n");
+                        ui.println("已取消待执行的 Plan-And-Execute, 回到默认的 React 模式. \n");
                     }
                     if (nextTaskUseTeamMode) {
                         nextTaskUseTeamMode = false;
-                        System.out.println("已取消待执行的 Multi-Agent, 回到默认的 ReAct 模式.");
+                        ui.println("已取消待执行的 Multi-Agent, 回到默认的 ReAct 模式.");
                     }
                     continue;
                 }
@@ -318,22 +337,27 @@ public class Main {
                 ParsedCommand command = CliCommandParser.parse(input);
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
-                        System.out.println("未知命令: " + command.payload());
-
+                        ui.println("未知命令: " + command.payload());
                         continue;
                     }
                     case EXIT -> {
-                        System.out.println("\n再见!");
+                        ui.println("\n再见!");
+                        renderer.close();
                         return;
                     }
                     case CANCEL -> {
-                        System.out.println("当前没有正在运行的任务。\n");
+                        ui.println("当前没有正在运行的任务。\n");
                         continue;
                     }
                     case CLEAR -> {
                         reactAgent.clearHistory();
                         hitlHandler.clearApprovedAll();
-                        System.out.println("对话历史已清空, 长期记忆不变\n");
+                        ui.println("对话历史已清空, 长期记忆不变\n");
+                        continue;
+                    }
+                    case HISTORY_CLEAR -> {
+                        clearLineReaderHistory(lineReader);
+                        ui.println("🧹 输入历史已清空\n");
                         continue;
                     }
                     case CONFIG -> {
@@ -341,46 +365,46 @@ public class Main {
                         continue;
                     }
                     case CONTEXT_STATUS -> {
-                        System.out.println("📋 上下文状态：");
-                        System.out.println(reactAgent.getContextStatus());
-                        System.out.println();
+                        ui.println("📋 上下文状态：");
+                        ui.println(reactAgent.getContextStatus());
+                        ui.println();
                         continue;
                     }
                     case MEMORY_STATUS -> {
-                        System.out.println("记忆状态: ");
-                        System.out.println(reactAgent.getSystemStatus());
-                        System.out.println("   /memory clear - 清空长期记忆");
-                        System.out.println("   /save <事实> - 手动保存到长期记忆");
-                        System.out.println();
+                        ui.println("记忆状态: ");
+                        ui.println(reactAgent.getSystemStatus());
+                        ui.println("   /memory clear - 清空长期记忆");
+                        ui.println("   /save <事实> - 手动保存到长期记忆");
+                        ui.println();
                         continue;
                     }
                     case MEMORY_CLEAR -> {
                         reactAgent.getMemoryManager().clearLongTerm();
-                        System.out.println("长期记忆已清空");
-                        System.out.println();
+                        ui.println("长期记忆已清空");
+                        ui.println();
                         continue;
                     }
                     case MEMORY_SAVE -> {
                         String fact = command.payload();
                         if (fact == null || fact.isBlank()) {
-                            System.out.println("请提供需要保存的内容, 例如: /save 这个项目使用 Java17");
+                            ui.println("请提供需要保存的内容, 例如: /save 这个项目使用 Java17");
                         } else {
                             reactAgent.getMemoryManager().storeFact(fact);
-                            System.out.println("已保存到长期记忆: " + fact + "\n");
+                            ui.println("已保存到长期记忆: " + fact + "\n");
                         }
                         continue;
                     }
                     case SWITCH_MODEL -> {
                         String selection = command.payload();
                         if (selection == null || selection.isEmpty()) {
-                            System.out.println("🤖 当前模型: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
-                            System.out.println("   GLM 明确模型：");
-                            System.out.println("   /model glm-5.1       - 切换到 GLM-5.1");
-                            System.out.println("   /model glm-5v-turbo  - 切换到 GLM-5V-Turbo 多模态");
-                            System.out.println("   其它 provider 使用你配置里的具体模型：");
-                            System.out.println("   /model deepseek      - 切换到 DeepSeek（读取配置模型）");
-                            System.out.println("   /model step          - 切换到 StepFun（读取配置模型）");
-                            System.out.println("   /model kimi          - 切换到 Kimi（读取配置模型）\n");
+                            ui.println("🤖 当前模型: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
+                            ui.println("   GLM 明确模型：");
+                            ui.println("   /model glm-5.1       - 切换到 GLM-5.1");
+                            ui.println("   /model glm-5v-turbo  - 切换到 GLM-5V-Turbo 多模态");
+                            ui.println("   其它 provider 使用你配置里的具体模型：");
+                            ui.println("   /model deepseek      - 切换到 DeepSeek（读取配置模型）");
+                            ui.println("   /model step          - 切换到 StepFun（读取配置模型）");
+                            ui.println("   /model kimi          - 切换到 Kimi（读取配置模型）\n");
                         } else {
                             ModelSelection target = resolveModelSelection(selection);
                             if (target.explicitModel()) {
@@ -389,16 +413,17 @@ public class Main {
 
                             LlmClient newClient = LlmClientFactory.create(target.provider(), config);
                             if (newClient == null) {
-                                System.out.println("❌ 切换失败：未配置 " + target.provider() + " 的 API Key\n");
+                                ui.println("❌ 切换失败：未配置 " + target.provider() + " 的 API Key\n");
                             } else {
                                 llmClient = newClient;
                                 llmClientRef.set(newClient);
                                 config.setDefaultProvider(target.provider());
                                 config.save();
                                 reactAgent.setLlmClient(llmClient);
-                                System.out.println("✅ 已切换到: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
-                                System.out.println("   上下文策略: " + reactAgent.getMemoryManager().getContextProfile().summary());
-                                System.out.println("   对话上下文已保留，使用 /clear 可清空\n");
+                                ui.println("✅ 已切换到: " + llmClient.getModelName() + " (" + llmClient.getProviderName() + ")");
+                                ui.println("   上下文策略: " + reactAgent.getMemoryManager().getContextProfile().summary());
+                                ui.println("   对话上下文已保留，使用 /clear 可清空\n");
+                                renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                             }
                         }
 
@@ -408,7 +433,7 @@ public class Main {
                         // 不携带命令, 下个任务使用 plan 模式
                         if (command.payload() == null || command.payload().isEmpty()) {
                             nextTaskUsePlanMode = true;
-                            System.out.println("下一次输入将使用 PlanAndExecute 模式, 输入任务前按 Esc 可取消.\n");
+                            ui.println("下一次输入将使用 PlanAndExecute 模式, 输入任务前按 Esc 可取消.\n");
 
                             continue;
                         }
@@ -419,7 +444,7 @@ public class Main {
                     case SWITCH_TEAM -> {
                         if (command.payload() == null || command.payload().isBlank()) {
                             nextTaskUseTeamMode = true;
-                            System.out.println("下一条任务将使用 Multi-Agent 协作模式 (规划者 + 执行者 + 检查者). 输入任务前按 ESC 可取消, 执行完成后自动回到默认 ReAct.\n");
+                            ui.println("下一条任务将使用 Multi-Agent 协作模式 (规划者 + 执行者 + 检查者). 输入任务前按 ESC 可取消, 执行完成后自动回到默认 ReAct.\n");
                             printSlashCommandHelp();
                             continue;
                         }
@@ -430,93 +455,99 @@ public class Main {
                         String payload = command.payload();
                         if ("on".equals(payload)) {
                             hitlHandler.setEnabled(true);
-                            System.out.println("HITL 审批已启用");
+                            ui.println("HITL 审批已启用");
                         } else if ("off".equals(payload)) {
                             hitlHandler.setEnabled(false);
                             hitlHandler.clearApprovedAll();
-                            System.out.println("HITL 审批已关闭, 危险命令将自动执行");
+                            ui.println("HITL 审批已关闭, 危险命令将自动执行");
                         } else {
                             String status = hitlHandler.isEnabled() ? "启用" : "关闭";
-                            System.out.println("🔒 HITL 当前状态：" + status);
-                            System.out.println("   /hitl on  - 启用人工审批");
-                            System.out.println("   /hitl off - 关闭人工审批\n");
+                            ui.println("🔒 HITL 当前状态：" + status);
+                            ui.println("   /hitl on  - 启用人工审批");
+                            ui.println("   /hitl off - 关闭人工审批\n");
                         }
-
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case POLICY_STATUS -> {
-                        printPolicyStatus(reactAgent);
+                        printPolicyStatus(reactAgent, ui);
 
                         continue;
                     }
                     case AUDIT_TAIL -> {
-                        printAuditTail(reactAgent, command.payload());
+                        printAuditTail(ui, reactAgent, command.payload());
 
                         continue;
                     }
                     case SNAPSHOT -> {
-                        printSnapshotCommand(reactAgent.getToolRegistry().getSnapshotService(), command.payload());
+                        printSnapshotCommand(ui, reactAgent.getToolRegistry().getSnapshotService(), command.payload());
                         continue;
                     }
                     case RESTORE_SNAPSHOT -> {
-                        printRestoreCommand(reactAgent.getToolRegistry().getSnapshotService(), command.payload());
+                        printRestoreCommand(ui, reactAgent.getToolRegistry().getSnapshotService(), command.payload());
                         continue;
                     }
                     case MCP_LIST -> {
-                        System.out.println(mcpServerManager.formatStatus());
-                        System.out.println();
+                        ui.println(mcpServerManager.formatStatus());
+                        ui.println();
 
                         continue;
                     }
                     case MCP_RESTART -> {
-                        printMcpCommandResult(mcpServerManager.restart(command.payload()));
+                        printMcpCommandResult(ui, mcpServerManager.restart(command.payload()));
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case MCP_LOGS -> {
-                        printMcpCommandResult(mcpServerManager.logs(command.payload()));
+                        printMcpCommandResult(ui, mcpServerManager.logs(command.payload()));
                         continue;
                     }
                     case MCP_DISABLE -> {
-                        printMcpCommandResult(mcpServerManager.disable(command.payload()));
+                        printMcpCommandResult(ui, mcpServerManager.disable(command.payload()));
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case MCP_ENABLE -> {
-                        printMcpCommandResult(mcpServerManager.enable(command.payload()));
+                        printMcpCommandResult(ui, mcpServerManager.enable(command.payload()));
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case MCP_RESOURCES -> {
-                        printMcpCommandResult(mcpServerManager.resources(command.payload()));
+                        printMcpCommandResult(ui, mcpServerManager.resources(command.payload()));
                         continue;
                     }
                     case MCP_PROMPTS -> {
-                        printMcpCommandResult(mcpServerManager.prompts(command.payload()));
+                        printMcpCommandResult(ui, mcpServerManager.prompts(command.payload()));
                         continue;
                     }
                     case SKILL_LIST -> {
-                        System.out.println(SkillCommandHandler.list(skillRegistry));
+                        ui.println(SkillCommandHandler.list(skillRegistry));
                         continue;
                     }
                     case SKILL_SHOW -> {
-                        System.out.println(SkillCommandHandler.show(skillRegistry, command.payload()));
+                        ui.println(SkillCommandHandler.show(skillRegistry, command.payload()));
                         continue;
                     }
                     case SKILL_ON -> {
-                        System.out.println(SkillCommandHandler.enable(skillRegistry, skillStateStore, command.payload()));
+                        ui.println(SkillCommandHandler.enable(skillRegistry, skillStateStore, command.payload()));
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case SKILL_OFF -> {
-                        System.out.println(SkillCommandHandler.disable(skillRegistry, skillStateStore, command.payload()));
+                        ui.println(SkillCommandHandler.disable(skillRegistry, skillStateStore, command.payload()));
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case SKILL_RELOAD -> {
                         skillRegistry.reload();
-                        System.out.println("🔄 已重新扫描 skill 目录");
-                        System.out.println(SkillCommandHandler.startupSummary(skillRegistry));
-                        System.out.println("✅ 下一轮 LLM 调用生效");
+                        ui.println("🔄 已重新扫描 skill 目录");
+                        ui.println(SkillCommandHandler.startupSummary(skillRegistry));
+                        ui.println("✅ 下一轮 LLM 调用生效");
+                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
                         continue;
                     }
                     case BROWSER -> {
-                        printMcpCommandResult(handleBrowserCommand(
+                        printMcpCommandResult(ui, handleBrowserCommand(
                                 command.payload(),
                                 browserSession,
                                 browserConnectivityCheck,
@@ -527,16 +558,14 @@ public class Main {
                         continue;
                     }
                     case TASK -> {
-                        printMcpCommandResult(TaskCommandFormatter.handle(taskManager, command.payload()));
+                        printMcpCommandResult(ui, TaskCommandFormatter.handle(taskManager, command.payload()));
                         continue;
                     }
                     case INDEX_CODE -> {
                         String indexPath = command.payload() != null ? command.payload() : ".";
-                        System.out.println("正在索引代码库: " + indexPath);
-
-                        CodeIndex indexer = new CodeIndex();
-                        IndexResult result = indexer.index(indexPath);
-                        System.out.println(result.message() + "\n");
+                        CodeIndex indexer = new CodeIndex(ui::println);
+                        indexer.index(indexPath);
+                        ui.println();
 
                         // 同步项目路径到 toolRegistry
                         String absPath = new File(indexPath).getAbsolutePath();
@@ -546,62 +575,62 @@ public class Main {
                     case SEARCH_CODE -> {
                         String query = command.payload();
                         if (query == null || query.isBlank()) {
-                            System.out.println("请提供检索关键词, 例如: /search 用户登录实现");
+                            ui.println("请提供检索关键词, 例如: /search 用户登录实现");
                             continue;
                         }
 
-                        System.out.println("正在检索: " + query);
+                        ui.println("正在检索: " + query);
                         try (CodeRetriever retriever = new CodeRetriever(".")) {
                             IndexStats stats = retriever.getStats();
                             if (stats.chunkCount() == 0) {
-                                System.out.println("代码库尚未建立索引, 请先使用 /index 命令");
+                                ui.println("代码库尚未建立索引, 请先使用 /index 命令");
                                 continue;
                             }
 
                             List<SearchResult> searchResults = retriever.hybridSearch(query, 5);
                             if (searchResults.isEmpty()) {
-                                System.out.println("未找到相关内容");
+                                ui.println("未找到相关内容");
                             } else {
-                                System.out.println(SearchResultFormatter.formatForCli(query, searchResults) + "\n");
+                                ui.println(SearchResultFormatter.formatForCli(query, searchResults) + "\n");
                             }
                         } catch (Exception e) {
-                            System.out.println("检索失败: " + e.getMessage() + "\n");
+                            ui.println("检索失败: " + e.getMessage() + "\n");
                         }
                         continue;
                     }
                     case GRAPH_QUERY -> {
                         String className = command.payload();
                         if (className == null || className.isBlank()) {
-                            System.out.println("请提供类名, 例如 /graph User");
+                            ui.println("请提供类名, 例如 /graph User");
                             continue;
                         }
 
-                        System.out.println("正在查询类关系图谱: " + className);
+                        ui.println("正在查询类关系图谱: " + className);
                         try (CodeRetriever retriever = new CodeRetriever(".")) {
                             IndexStats stats = retriever.getStats();
                             if (stats.chunkCount() == 0) {
-                                System.out.println("代码库尚未建立索引, 请先使用 /index 命令");
+                                ui.println("代码库尚未建立索引, 请先使用 /index 命令");
                                 continue;
                             }
 
                             List<CodeRelation> relations = retriever.getRelationGraph(className);
                             if (relations.isEmpty()) {
-                                System.out.println("未找到相关关系\n");
+                                ui.println("未找到相关关系\n");
                             } else {
-                                System.out.println("找到 " + relations.size() + " 条关系:\n");
+                                ui.println("找到 " + relations.size() + " 条关系:\n");
                                 for (CodeRelation rel : relations) {
                                     String arrow = rel.relationType().equals("contains") ? "├── contains -->"
                                             : rel.relationType().equals("extends") ? "└── extends -->"
                                               : rel.relationType().equals("implements") ? "└── implements -->"
                                                 : rel.relationType().equals("calls") ? "├── calls -->"
                                                   : "├── " + rel.relationType() + " -->";
-                                    System.out.printf("   %s %s [%s]%n", rel.fromName(), arrow,
+                                    ui.printf("   %s %s [%s]%n", rel.fromName(), arrow,
                                             rel.toName() != null ? rel.toName() : "unknown");
                                 }
-                                System.out.println();
+                                ui.println();
                             }
                         } catch (Exception e) {
-                            System.out.println("查询失败: " + e.getMessage() + "\n");
+                            ui.println("查询失败: " + e.getMessage() + "\n");
                         }
                         continue;
                     }
@@ -611,7 +640,7 @@ public class Main {
 
                 // 运行 Agent, 调用 Mcp Resource
                 input = mentionExpander.expand(input);
-                System.out.println();
+                ui.println();
                 renderer.beginTurn();
 
                 String taskInput = input;
@@ -621,7 +650,7 @@ public class Main {
                     snapshotMode = "plan";
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
-                        PlanAndExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader);
+                        PlanAndExecuteAgent planAgent = createPlanAgent(activeClient, reactAgent, terminal, lineReader, ui);
                         planAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         planAgent.setSkillRegistry(skillRegistry);
                         planAgent.setSkillContextBuffer(skillContextBuffer);
@@ -631,7 +660,7 @@ public class Main {
                     snapshotMode = "team";
                     LlmClient activeClient = llmClient;
                     runTask = () -> {
-                        AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent);
+                        AgentOrchestrator orchestrator = createTeamAgent(activeClient, reactAgent, ui);
                         orchestrator.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
                         orchestrator.setSkillSystem(skillRegistry, skillContextBuffer);
                         return orchestrator.run(taskInput);
@@ -640,21 +669,32 @@ public class Main {
                     snapshotMode = "react";
                     runTask = () -> reactAgent.run(taskInput);
                 }
+
                 SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
+                renderer.updateStatus(statusInfo(llmClient, hitlHandler, snapshotMode, mcpServerManager, skillRegistry));
                 String response = runWithCancelSupport(terminal,
+                        ui,
                         () -> snapshotService.runTurn(snapshotMode, taskInput, runTask::call));
+                if (!"react".equals(snapshotMode)) {
+                    renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                }
                 nextTaskUsePlanMode = false;
                 nextTaskUseTeamMode = false;
-
                 if (response != null && !response.isBlank()) {
-                    System.out.println(response);
-                    System.out.println();
+                    ui.println(response);
+                    ui.println();
                 }
             }
+            ui.println("\n👋 再见!");
+            renderer.close();
+
+        } catch (IOException e) {
+            System.err.println("❌ 终端初始化失败: " + e.getMessage());
+            System.exit(1);
         }
     }
 
-    private static String runWithCancelSupport(Terminal terminal, Callable<String> task) {
+    private static String runWithCancelSupport(Terminal terminal, PrintStream out, Callable<String> task) {
         CancellationToken token = CancellationContext.startRun();
         ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
             Thread thread = new Thread(r, "paicode-agent-runner");
@@ -664,7 +704,6 @@ public class Main {
         Future<String> future = executor.submit(task);
 
         Attributes original = null;
-        boolean hintPrinted = false;
         try {
             if (terminal != null) {
                 try {
@@ -675,10 +714,6 @@ public class Main {
             }
 
             while (!future.isDone()) {
-                if (!hintPrinted) {
-                    System.out.println("   运行中按 ESC 取消当前任务。");
-                    hintPrinted = true;
-                }
                 if (original != null && readEscCancel(terminal)) {
                     token.cancel();
                     future.cancel(true);
@@ -787,20 +822,20 @@ public class Main {
         return defaultPort;
     }
 
-    private static void printSnapshotCommand(SnapshotService snapshotService, String payload) {
+    private static void printSnapshotCommand(PrintStream out, SnapshotService snapshotService, String payload) {
         String normalized = payload == null || payload.isBlank() ? "list" : payload.trim().toLowerCase();
         if ("status".equals(normalized)) {
-            System.out.println(snapshotService.status());
-            System.out.println();
+            out.println(snapshotService.status());
+            out.println();
             return;
         }
         if ("clean".equals(normalized)) {
-            System.out.println(snapshotService.clean());
-            System.out.println();
+            out.println(snapshotService.clean());
+            out.println();
             return;
         }
         if (!"list".equals(normalized)) {
-            System.out.println("""
+            out.println("""
                     ❌ 未知 /snapshot 子命令: %s
                     可用命令：
                       /snapshot
@@ -808,18 +843,18 @@ public class Main {
                       /snapshot clean
                       /restore <N>
                     """.formatted(payload).trim());
-            System.out.println();
+            out.println();
             return;
         }
 
         try {
             List<TurnSnapshot> snapshots = snapshotService.listSnapshots(20);
             if (snapshots.isEmpty()) {
-                System.out.println("📭 暂无 Side-Git 快照\n");
+                out.println("📭 暂无 Side-Git 快照\n");
                 return;
             }
 
-            System.out.println("📸 最近 " + snapshots.size() + " 条 Side-Git 快照：");
+            out.println("📸 最近 " + snapshots.size() + " 条 Side-Git 快照：");
             int preTurnIndex = 0;
             for (TurnSnapshot snapshot : snapshots) {
                 String restoreHint = "";
@@ -827,27 +862,27 @@ public class Main {
                     preTurnIndex++;
                     restoreHint = "  /restore " + preTurnIndex;
                 }
-                System.out.printf("   %s %-11s %-18s %s%s%n",
+                out.printf("   %s %-11s %-18s %s%s%n",
                         snapshot.shortCommitId(),
                         snapshot.phase().label(),
                         snapshot.turnId(),
                         snapshot.createdAt(),
                         restoreHint);
             }
-            System.out.println();
+            out.println();
         } catch (Exception e) {
-            System.out.println("❌ 读取快照失败: " + e.getMessage() + "\n");
+            out.println("❌ 读取快照失败: " + e.getMessage() + "\n");
         }
     }
 
-    private static void printRestoreCommand(SnapshotService snapshotService, String payload) {
+    private static void printRestoreCommand(PrintStream out, SnapshotService snapshotService, String payload) {
         int offset = parseAuditCount(payload, 1);
         try {
             RestoreResult result = snapshotService.restorePreTurn(offset);
-            System.out.println(result.formatForCli());
-            System.out.println();
+            out.println(result.formatForCli());
+            out.println();
         } catch (Exception e) {
-            System.out.println("❌ 恢复快照失败: " + e.getMessage() + "\n");
+            out.println("❌ 恢复快照失败: " + e.getMessage() + "\n");
         }
     }
 
@@ -1023,38 +1058,46 @@ public class Main {
         return classifyEscapeSequence(escTail) == EscapeSequenceType.STANDALONE_ESC;
     }
 
-    private static PromptInput readPromptInput(Terminal terminal, LineReader lineReader, boolean allowEscCancel, boolean spaciousPrompt)
+    private static PromptInput readPromptInput(Terminal terminal, LineReader lineReader, Renderer renderer,
+                                               boolean allowEscCancel, boolean spaciousPrompt)
             throws UserInterruptException, EndOfFileException {
         if (spaciousPrompt) {
-            System.out.println();
-        }
-        // 不允许使用 Esc 取消, 即 ReAct
-        if (!allowEscCancel) {
-            // 直接读取用户输入并返回
-            return PromptInput.submitted(lineReader.readLine("你: "));
+            renderer.stream().println();
         }
 
-        // 允许使用 Esc 取消, 即 Plan 或 Team
-        String prompt = "你: ";
-        System.out.println(prompt);
-        System.out.flush();
+        renderer.beforeInput();
+        try {
+            String prompt = renderer.inputPrompt();
+            String rightPrompt = renderer.inputRightPrompt();
+            if (!allowEscCancel) {
+                return PromptInput.submitted(lineReader.readLine(prompt, rightPrompt, (MaskingCallback) null, null));
+            }
 
-        PrefillResult prefill = readPrefillInputFromTerminal(terminal, lineReader);
-        if (prefill == null) {
-            return PromptInput.submitted(lineReader.readLine(""));
+            if (terminal != null && terminal.writer() != null) {
+                terminal.writer().print(prompt);
+                terminal.writer().flush();
+            } else {
+                renderer.stream().print(prompt);
+                renderer.stream().flush();
+            }
+
+            PrefillResult prefill = readPrefillInputFromTerminal(terminal, lineReader);
+            if (prefill == null) {
+                return PromptInput.submitted(lineReader.readLine("", rightPrompt, (MaskingCallback) null, null));
+            }
+
+            if (prefill.canceled()) {
+                return PromptInput.canceledInput();
+            }
+
+            if (prefill.submitted()) {
+                return PromptInput.submitted("");
+            }
+
+            return PromptInput.submitted(lineReader.readLine("", rightPrompt, (MaskingCallback) null, prefill.seedBuffer()));
+        } finally {
+            renderer.afterInput();
         }
-
-        if (prefill.canceled()) {
-            System.out.println();
-            return PromptInput.canceledInput();
-        }
-
-        if (prefill.submitted()) {
-            System.out.println();
-            return PromptInput.submitted("");
-        }
-
-        return PromptInput.submitted(lineReader.readLine("", null, (MaskingCallback) null, prefill.seedBuffer()));
     }
 
     private static PrefillResult readPrefillInputFromTerminal(Terminal terminal, LineReader lineReader) {
@@ -1211,29 +1254,36 @@ public class Main {
         return key == '\n' || key == '\r';
     }
 
-    private static PlanAndExecuteAgent createPlanAgent(LlmClient llmClient, Agent reactAgent, Terminal terminal, LineReader lineReader) {
-        System.out.println("使用 PlanAndExecute-and-Execute 模式\n");
-        return createPlanAgent(llmClient, reactAgent, createPlanReviewHandler(terminal, lineReader));
+    private static PlanAndExecuteAgent createPlanAgent(LlmClient llmClient, Agent reactAgent, Terminal terminal, LineReader lineReader, PrintStream out) {
+        out.println("📋 使用 Plan-and-Execute 模式\n");
+        return new PlanAndExecuteAgent(
+                llmClient,
+                reactAgent.getToolRegistry(),
+                createPlanReviewHandler(terminal, lineReader, out),
+                reactAgent.getMemoryManager(),
+                out
+        );
     }
 
     private static PlanAndExecuteAgent createPlanAgent(LlmClient llmClient, Agent reactAgent, PlanReviewHandler reviewHandler) {
         return new PlanAndExecuteAgent(
                 llmClient,
                 reactAgent.getToolRegistry(),
+                reviewHandler,
                 reactAgent.getMemoryManager(),
-                reviewHandler
+                System.out
         );
     }
 
-    private static PlanReviewHandler createPlanReviewHandler(Terminal terminal, LineReader lineReader) {
+    private static PlanReviewHandler createPlanReviewHandler(Terminal terminal, LineReader lineReader, PrintStream out) {
         return (String goal, ExecutionPlan plan) -> {
             boolean expanded = false;
-            System.out.println(plan.summarize());
-            System.out.println("计划已生成。");
-            System.out.println("   - 回车：按当前计划执行");
-            System.out.println("   - Ctrl+O：展开完整计划");
-            System.out.println("   - ESC：折叠或取消本次计划");
-            System.out.println("   - I：输入补充要求后重新规划\n");
+            out.println(plan.summarize());
+            out.println("计划已生成。");
+            out.println("   - 回车：按当前计划执行");
+            out.println("   - Ctrl+O：展开完整计划");
+            out.println("   - ESC：折叠或取消本次计划");
+            out.println("   - I：输入补充要求后重新规划\n");
 
             while (true) {
                 KeyReadResult keyReadResult = readSingleKeyFromTerminal(terminal);
@@ -1245,17 +1295,17 @@ public class Main {
                 if (key != null) {
                     // Enter (13 或 10)
                     if (key == '\n' || key == '\r') {
-                        System.out.println();
+                        out.println();
                         return PlanReviewDecision.execute();
                     }
 
                     // ESC (27)
                     if (key == 27) {
-                        System.out.println();
+                        out.println();
                         if (expanded) {
                             expanded = false;
-                            System.out.println(plan.summarize());
-                            System.out.println("已退出完整计划视图，继续按 Enter / Ctrl+O / ESC / I。\n");
+                            out.println(plan.summarize());
+                            out.println("已退出完整计划视图，继续按 Enter / Ctrl+O / ESC / I。\n");
                             continue;
                         }
                         return PlanReviewDecision.cancel();
@@ -1263,7 +1313,7 @@ public class Main {
 
                     // I 或 i
                     if (key == 'i' || key == 'I') {
-                        System.out.println();
+                        out.println();
                         String supplementInput = lineReader.readLine("补充> ").trim();
                         Decision supplementDecision = PlanReviewInputParser.parse(supplementInput);
                         return mapReviewDecision(supplementDecision);
@@ -1271,25 +1321,25 @@ public class Main {
 
                     // Ctrl+O
                     if (key == CTRL_O) {
-                        System.out.println();
-                        System.out.println(plan.visualize());
+                        out.println();
+                        out.println(plan.visualize());
                         expanded = true;
-                        System.out.println("👆 已展开完整计划，继续按 Enter / Ctrl+O / ESC / I。\n");
+                        out.println("👆 已展开完整计划，继续按 Enter / Ctrl+O / ESC / I。\n");
                         continue;
                     }
 
-                    System.out.println();
-                    System.out.println("未识别按键，请按 Enter / Ctrl+O / ESC / I。\n");
+                    out.println();
+                    out.println("未识别按键，请按 Enter / Ctrl+O / ESC / I。\n");
                     continue;
                 }
 
                 // 如果无法读取单键，回退为行输入模式
                 String decisionInput = lineReader.readLine("操作/补充> ").trim();
                 if (decisionInput.equalsIgnoreCase("/view")) {
-                    System.out.println();
-                    System.out.println(plan.visualize());
+                    out.println();
+                    out.println(plan.visualize());
                     expanded = true;
-                    System.out.println("👆 已展开完整计划，继续输入 Enter / /cancel / 补充要求。\n");
+                    out.println("👆 已展开完整计划，继续输入 Enter / /cancel / 补充要求。\n");
                     continue;
                 }
                 Decision decision = PlanReviewInputParser.parse(decisionInput);
@@ -1450,9 +1500,9 @@ public class Main {
         return loadConfigValue("DEEPSEEK_API_KEY", null);
     }
 
-    private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent) {
-        System.out.println("使用 Multi-Agent 协作模式");
-        return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager());
+    private static AgentOrchestrator createTeamAgent(LlmClient llmClient, Agent reactAgent, PrintStream out) {
+        out.println("使用 Multi-Agent 协作模式");
+        return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager(), out);
     }
 
     private static McpConfigBootstrapResult ensureDefaultMcpConfig(Path userHome) throws IOException {
@@ -1523,28 +1573,76 @@ public class Main {
         return config.getProviders().computeIfAbsent(provider, ignored -> new ProviderConfig());
     }
 
-    private static void printBanner() {
-        System.out.println("╔══════════════════════════════════════════════════════════╗");
-        System.out.println("║                                                          ║");
-        System.out.println("║   ██████╗  █████╗ ██╗ ██████╗██╗     ██╗                 ║");
-        System.out.println("║   ██╔══██╗██╔══██╗██║██╔════╝██║     ██║                 ║");
-        System.out.println("║   ██████╔╝███████║██║██║     ██║     ██║                 ║");
-        System.out.println("║   ██╔═══╝ ██╔══██║██║██║     ██║     ██║                 ║");
-        System.out.println("║   ██║     ██║  ██║██║╚██████╗███████╗██║                 ║");
-        System.out.println("║   ╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝╚═╝                 ║");
-        System.out.println("║                                                          ║");
-        System.out.printf("║      Terminal-First Agent IDE %-23s║%n", "v" + VERSION);
-        System.out.println("║                                                          ║");
-        System.out.println("╚══════════════════════════════════════════════════════════╝");
-        System.out.println();
+    private static void configureJLineInteractiveWidgets(LineReader lineReader) {
+        if (lineReader == null) {
+            return;
+        }
+        new AutosuggestionWidgets(lineReader).enable();
+        new AutopairWidgets(lineReader).enable();
+        // JLine TailTipWidgets 会通过 Status 预留多行底部区域；如果在首屏前 enable，
+        // banner 前会出现大段空白，输入行下方也会长期空出一块。命令说明后续用
+        // 不预留布局的方式展示，避免破坏 Claude Code / Qoder 风格的 inline 体验。
     }
 
-    private static void printStartupHints() {
-        System.out.println("提示:");
-        for (String hint : startupHints()) {
-            System.out.println("   - " + hint);
+    private static LinkedHashMap<String, CmdDesc> slashCommandTailTips() {
+        LinkedHashMap<String, CmdDesc> tips = new LinkedHashMap<>();
+        for (SlashCommandHint hint : slashCommandHints()) {
+            tips.computeIfAbsent(hint.insertText(), key ->
+                    new CmdDesc().mainDesc(List.of(new AttributedString(hint.description()))));
+            tips.computeIfAbsent(hint.display(), key ->
+                    new CmdDesc().mainDesc(List.of(new AttributedString(hint.description()))));
         }
-        System.out.println();
+        return tips;
+    }
+
+    private static void printStartupScreen(PrintStream out, StartupScreenInfo info) {
+        for (String line : startupBannerLines(info)) {
+            out.println(line);
+        }
+        out.println();
+    }
+
+    static List<String> startupBannerLines() {
+        return startupBannerLines(new StartupScreenInfo(
+                "auto",
+                "model",
+                0,
+                0,
+                0,
+                0,
+                0,
+                ""));
+    }
+
+    static List<String> startupBannerLines(StartupScreenInfo info) {
+        String model = info.model() == null || info.model().isBlank() ? "auto" : info.model();
+        String provider = info.provider() == null || info.provider().isBlank() ? "model" : info.provider();
+        String mcp = info.mcpTotal() <= 0
+                ? "MCP not configured"
+                : "MCP " + info.mcpReady() + "/" + info.mcpTotal() + " · " + info.mcpTools() + " tools";
+        String skills = info.skillsTotal() <= 0
+                ? "0 skills"
+                : info.skillsEnabled() + "/" + info.skillsTotal() + " skills";
+        String ready = "Model " + model + " (" + provider + ")";
+        String capabilities = "ReAct · Plan · MCP · Browser · Image";
+        String state = mcp + " · " + skills + " · ReAct";
+        List<String> lines = new ArrayList<>(List.of(
+                "   " + AnsiStyle.section("████████") + "    " + AnsiStyle.emphasis("PaiCLI") + " " + AnsiStyle.section("π") + "  " + AnsiStyle.subtle("v" + VERSION),
+                "   " + AnsiStyle.section("  ██  ██") + "    " + AnsiStyle.subtle(ready),
+                "   " + AnsiStyle.section("  ██  ██") + "    " + AnsiStyle.subtle(state),
+                "   " + AnsiStyle.section("  ██  ██") + "    " + AnsiStyle.subtle(capabilities),
+                "   " + AnsiStyle.section("  ██  ██"),
+                "",
+                "Tips for getting started:",
+                "1. Type " + AnsiStyle.emphasis("/") + " for commands and Tab completion",
+                "2. Ask coding questions, edit code or run commands",
+                "3. Attach context with " + AnsiStyle.emphasis("@path") + " or " + AnsiStyle.emphasis("@image:")
+        ));
+        if (info.note() != null && !info.note().isBlank()) {
+            lines.add("");
+            lines.add(AnsiStyle.subtle(info.note().replace('\n', ' ')));
+        }
+        return lines;
     }
 
     private static List<String> startupHints() {
@@ -1563,16 +1661,7 @@ public class Main {
         }
 
         lineReader.getWidgets().put("paicode-slash-command-hint", () -> {
-            boolean atPromptStart = lineReader.getBuffer().length() == 0;
             lineReader.getBuffer().write("/");
-            if (atPromptStart) {
-                int width = 100;
-                if (lineReader.getTerminal() != null && lineReader.getTerminal().getSize() != null) {
-                    width = Math.max(40, lineReader.getTerminal().getSize().getColumns());
-                }
-                lineReader.printAbove(formatSlashCommandChoices(width));
-                lineReader.callWidget(LineReader.REDISPLAY);
-            }
             return true;
         });
         Reference slashHint = new Reference("paicode-slash-command-hint");
@@ -1629,7 +1718,7 @@ public class Main {
         );
         int selected = renderer.openPalette("配置 / config", items);
         if (selected < 0) {
-            System.out.println("(已关闭)");
+            renderer.stream().println("(已关闭)");
             return;
         }
         String hint = switch (selected) {
@@ -1640,7 +1729,7 @@ public class Main {
             case 5 -> "💡 当前不在 TUI 内编辑 config.json，建议在编辑器里改完重启";
             default -> "(unknown)";
         };
-        System.out.println(hint);
+        renderer.stream().println(hint);
     }
 
 
@@ -1724,54 +1813,58 @@ public class Main {
     }
 
     private static void printSlashCommandHelp() {
-        System.out.println("可用命令：");
+        printSlashCommandHelp(System.out);
+    }
+
+    private static void printSlashCommandHelp(PrintStream out) {
+        out.println("可用命令：");
         for (SlashCommandHint hint : slashCommandHints()) {
-            System.out.println("   " + hint.display() + " - " + hint.description());
+            out.println("   " + hint.display() + " - " + hint.description());
         }
-        System.out.println();
+        out.println();
     }
 
-    private static void printPolicyStatus(Agent reactAgent) {
-        System.out.println("🛡️ 安全策略状态：");
-        System.out.println("   项目根: " + reactAgent.getToolRegistry().getProjectPath());
-        System.out.println("   危险工具: " + String.join(", ", ApprovalPolicy.getDangerousTools()));
-        System.out.println("   路径围栏: 强制限定在项目根之内（read_file / write_file / list_dir / create_project）");
-        System.out.println("   命令黑名单: sudo / rm -rf 全盘 / mkfs / dd of=/dev / fork bomb / curl|sh / find / / chmod 777 / / shutdown");
-        System.out.println("   写入文件上限: 5MB");
-        System.out.println("   命令执行上限: 60 秒，输出 8KB（截断）");
-        System.out.println("   审计目录: " + reactAgent.getToolRegistry().getAuditLog().getAuditDir());
-        System.out.println();
+    private static void printPolicyStatus(Agent reactAgent, PrintStream out) {
+        out.println("🛡️ 安全策略状态：");
+        out.println("   项目根: " + reactAgent.getToolRegistry().getProjectPath());
+        out.println("   危险工具: " + String.join(", ", ApprovalPolicy.getDangerousTools()));
+        out.println("   路径围栏: 强制限定在项目根之内（read_file / write_file / list_dir / create_project）");
+        out.println("   命令黑名单: sudo / rm -rf 全盘 / mkfs / dd of=/dev / fork bomb / curl|sh / find / / chmod 777 / / shutdown");
+        out.println("   写入文件上限: 5MB");
+        out.println("   命令执行上限: 60 秒，输出 8KB（截断）");
+        out.println("   审计目录: " + reactAgent.getToolRegistry().getAuditLog().getAuditDir());
+        out.println();
     }
 
-    private static void printAuditTail(Agent reactAgent, String payload) {
+    private static void printAuditTail(PrintStream out, Agent reactAgent, String payload) {
         int requested = parseAuditCount(payload, 10);
         List<AuditEntry> entries = reactAgent.getToolRegistry().getAuditLog().readRecent(requested);
         if (entries.isEmpty()) {
-            System.out.println("📭 今日尚无审计记录\n");
+            out.println("📭 今日尚无审计记录\n");
             return;
         }
 
-        System.out.println("📋 最近 " + entries.size() + " 条危险工具审计：");
+        out.println("📋 最近 " + entries.size() + " 条危险工具审计：");
         for (AuditEntry entry : entries) {
-            System.out.printf("   [%s] %s %s (%dms, approver=%s)%n",
+            out.printf("   [%s] %s %s (%dms, approver=%s)%n",
                     entry.outcome().toUpperCase(),
                     entry.timestamp(),
                     entry.tool(),
                     entry.durationMs(),
                     entry.approver());
             if (entry.reason() != null && !entry.reason().isBlank()) {
-                System.out.println("        原因: " + entry.reason());
+                out.println("        原因: " + entry.reason());
             }
 
             BrowserAuditMetadata metadata = entry.metadata();
             if (metadata != null) {
-                System.out.println("        浏览器: mode=" + metadata.browserMode()
+                out.println("        浏览器: mode=" + metadata.browserMode()
                         + ", sensitive=" + metadata.sensitive()
                         + (metadata.targetUrl() == null ? "" : ", url=" + metadata.targetUrl()));
             }
         }
 
-        System.out.println();
+        out.println();
     }
 
     private static int parseAuditCount(String payload, int defaultN) {
@@ -1784,9 +1877,9 @@ public class Main {
         }
     }
 
-    private static void printMcpCommandResult(String result) {
-        System.out.println(result);
-        System.out.println();
+    private static void printMcpCommandResult(PrintStream out, String result) {
+        out.println(result);
+        out.println();
     }
 
     private static String chromeLaunchHelp(int port) {
@@ -1809,4 +1902,150 @@ public class Main {
             return -1;
         }
     }
+
+    private static StartupScreenInfo startupScreenInfo(LlmClient llmClient,
+                                                       McpServerManager mcpServerManager,
+                                                       SkillRegistry skillRegistry,
+                                                       String note) {
+        long ready = mcpServerManager.servers().stream()
+                .filter(server -> server.status() == McpServerStatus.READY)
+                .count();
+        int total = mcpServerManager.servers().size();
+        int tools = mcpServerManager.servers().stream()
+                .mapToInt(server -> server.tools().size())
+                .sum();
+        int skillTotal = skillRegistry.allSkills().size();
+        int skillEnabled = skillRegistry.enabledSkills().size();
+        return new StartupScreenInfo(
+                llmClient.getModelName(),
+                llmClient.getProviderName(),
+                ready,
+                total,
+                tools,
+                skillEnabled,
+                skillTotal,
+                note == null ? "" : note.trim()
+        );
+    }
+
+    private static StatusInfo statusInfo(LlmClient llmClient,
+                                         SwitchableHitlHandler hitlHandler,
+                                         String phase,
+                                         McpServerManager mcpServerManager,
+                                         SkillRegistry skillRegistry) {
+        String normalizedPhase = phase == null || phase.isBlank() ? "idle" : phase;
+        StatusInfo base = "idle".equals(normalizedPhase)
+                ? StatusInfo.idle(llmClient.getModelName(), llmClient.maxContextWindow(), hitlHandler.isEnabled())
+                : StatusInfo.active(llmClient.getModelName(), llmClient.maxContextWindow(),
+                hitlHandler.isEnabled(), normalizedPhase);
+        return base.withEnvironment(mcpStatusSummary(mcpServerManager), skillStatusSummary(skillRegistry));
+    }
+
+    private static String mcpStatusSummary(McpServerManager mcpServerManager) {
+        if (mcpServerManager == null || mcpServerManager.servers().isEmpty()) {
+            return "MCP 0";
+        }
+        long ready = mcpServerManager.servers().stream()
+                .filter(server -> server.status() == McpServerStatus.READY)
+                .count();
+        return "MCP " + ready + "/" + mcpServerManager.servers().size();
+    }
+
+    private static String skillStatusSummary(SkillRegistry skillRegistry) {
+        if (skillRegistry == null || skillRegistry.allSkills().isEmpty()) {
+            return "Skill 0";
+        }
+        return "Skill " + skillRegistry.enabledSkills().size() + "/" + skillRegistry.allSkills().size();
+    }
+
+    private static String appendStartupNote(String current, String next) {
+        if (next == null || next.isBlank()) {
+            return current == null ? "" : current;
+        }
+        if (current == null || current.isBlank()) {
+            return next;
+        }
+        return current + "\n" + next;
+    }
+
+    static void configureHistory(LineReader lineReader, Path homeDir) {
+        if (lineReader == null) {
+            return;
+        }
+        Path historyFile = resolveHistoryFile(homeDir);
+        try {
+            Files.createDirectories(historyFile.getParent());
+            lineReader.setVariable(LineReader.HISTORY_FILE, historyFile);
+            lineReader.setVariable(LineReader.HISTORY_SIZE, historySize());
+            lineReader.setVariable(LineReader.HISTORY_FILE_SIZE, historyFileSize());
+            lineReader.setOpt(LineReader.Option.HISTORY_IGNORE_SPACE);
+            lineReader.setOpt(LineReader.Option.HISTORY_IGNORE_DUPS);
+            lineReader.setOpt(LineReader.Option.HISTORY_REDUCE_BLANKS);
+            lineReader.setOpt(LineReader.Option.DISABLE_EVENT_EXPANSION);
+            lineReader.getHistory().load();
+        } catch (IOException ignored) {
+            // History is a convenience feature; failed persistence must not block the CLI.
+        }
+    }
+
+    static Path resolveHistoryFile(Path homeDir) {
+        String configured = firstNonBlank(System.getProperty(HISTORY_FILE_PROPERTY), System.getenv("PAICLI_HISTORY_FILE"));
+        if (configured != null) {
+            return normalizeHistoryFile(Path.of(configured));
+        }
+        Path base = homeDir == null ? Path.of(System.getProperty("user.home")) : homeDir;
+        return base.resolve(".paicli").resolve("history").resolve(DEFAULT_HISTORY_FILE_NAME)
+                .toAbsolutePath().normalize();
+    }
+
+    static Path normalizeHistoryFile(Path configured) {
+        Path path = configured.toAbsolutePath().normalize();
+        if (Files.isDirectory(path)) {
+            return path.resolve(DEFAULT_HISTORY_FILE_NAME).toAbsolutePath().normalize();
+        }
+        return path;
+    }
+
+    static void clearLineReaderHistory(LineReader lineReader) {
+        if (lineReader == null || lineReader.getHistory() == null) {
+            return;
+        }
+        try {
+            lineReader.getHistory().purge();
+        } catch (IOException ignored) {
+            // Keep command behavior simple: in-memory history may still be reset by JLine.
+        }
+    }
+
+    private static int historySize() {
+        return configuredPositiveInt(HISTORY_SIZE_PROPERTY, "PAICLI_HISTORY_SIZE", 2_000);
+    }
+
+    private static int historyFileSize() {
+        return configuredPositiveInt(HISTORY_FILE_SIZE_PROPERTY, "PAICLI_HISTORY_FILE_SIZE", 10_000);
+    }
+
+    private static int configuredPositiveInt(String property, String env, int fallback) {
+        String raw = firstNonBlank(System.getProperty(property), System.getenv(env));
+        if (raw == null) {
+            return fallback;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value > 0 ? value : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first;
+        }
+        if (second != null && !second.isBlank()) {
+            return second;
+        }
+        return null;
+    }
+
 }

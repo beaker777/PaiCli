@@ -45,6 +45,7 @@ public class AgentOrchestrator {
     private final MemoryManager memoryManager;
     private final ToolRegistry toolRegistry;
     private Supplier<String> externalContextSupplier = () -> "";
+    private final PrintStream out;
 
     public AgentOrchestrator(LlmClient llmClient) {
         this(llmClient, new ToolRegistry());
@@ -55,11 +56,16 @@ public class AgentOrchestrator {
     }
 
     public AgentOrchestrator(LlmClient llmClient, ToolRegistry toolRegistry, MemoryManager memoryManager) {
+        this(llmClient, toolRegistry, memoryManager, null);
+    }
+
+    public AgentOrchestrator(LlmClient llmClient, ToolRegistry toolRegistry, MemoryManager memoryManager, PrintStream out) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.memoryManager = memoryManager;
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setMemorySaver(memoryManager::storeFact);
+        this.out = out == null ? System.out : out;
 
         this.planner = new SubAgent("planner", AgentRole.PLANNER, llmClient, toolRegistry);
         this.workers = List.of(
@@ -103,8 +109,8 @@ public class AgentOrchestrator {
 
 
         // 规划阶段, planner 制定任务
-        System.out.println(AnsiStyle.heading("第一阶段, 规划: "));
-        System.out.println("规划者正在分析任务...\n");
+        out.println(AnsiStyle.heading("第一阶段, 规划: "));
+        out.println("规划者正在分析任务...\n");
 
         AgentMessage planMessage = AgentMessage.task("orchestrator", "请为以下任务制定执行计划: \n" + userInput);
         AgentMessage planResult = planner.execute(planMessage);
@@ -126,11 +132,11 @@ public class AgentOrchestrator {
             return "规划失败, 无法解析执行计划\n原始输出: " + planResult.content();
         }
 
-        System.out.println(AnsiStyle.heading("执行计划"));
-        System.out.println(summarizeSteps(steps) + "\n");
+        out.println(AnsiStyle.heading("执行计划"));
+        out.println(summarizeSteps(steps) + "\n");
 
         // 执行计划, 按顺序分配给 worker
-        System.out.println(AnsiStyle.heading("第二阶段, 执行:"));
+        out.println(AnsiStyle.heading("第二阶段, 执行:"));
         Map<String, Integer> retryCount = new ConcurrentHashMap<>();
         int singleStepCursor = 0;
         int batchIndex = 0;
@@ -152,12 +158,12 @@ public class AgentOrchestrator {
                 SubAgent worker = workers.get(singleStepCursor % workers.size());
                 String context = buildStepContext(steps, step);
 
-                runStep(step, steps, retryCount, worker, reviewer, context, System.out);
+                runStep(step, steps, retryCount, worker, reviewer, context, out);
                 worker.clearHistory();
                 singleStepCursor ++;
             } else {
                 // 多个任务并行执行
-                System.out.println("批次 #" + batchIndex + ": " + executable.size() + " 个独立步骤并行执行" +
+                out.println("批次 #" + batchIndex + ": " + executable.size() + " 个独立步骤并行执行" +
                         " (最多 " + workers.size() + " 个并发 Worker)\n");
                 runBatchParallel(executable, steps, retryCount);
             }
@@ -166,7 +172,7 @@ public class AgentOrchestrator {
         // 处理因前置任务失败无法执行的步骤
         for (ExecutionStep step : steps) {
             if (step.status() == StepStatus.PENDING) {
-                System.out.println("步骤 [" + step.id() + "] 因前置步骤失败被跳过: " + step.description());
+                out.println("步骤 [" + step.id() + "] 因前置步骤失败被跳过: " + step.description());
             }
         }
 
@@ -566,8 +572,8 @@ public class AgentOrchestrator {
         for (ExecutionStep step : batch) {
             ByteArrayOutputStream baos = buffers.get(step.id());
             if (baos != null && baos.size() > 0) {
-                System.out.println(baos.toString(StandardCharsets.UTF_8));
-                System.out.flush();
+                out.println(baos.toString(StandardCharsets.UTF_8));
+                out.flush();
             }
         }
     }

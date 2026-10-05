@@ -11,6 +11,8 @@ import com.paicode.memory.service.memorize.ConversationMemory;
 import com.paicode.memory.service.memorize.LongTermMemory;
 import com.paicode.memory.service.query.MemoryRetriever;
 import lombok.Getter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -24,6 +26,7 @@ import java.util.UUID;
 @Getter
 public class MemoryManager {
 
+    private Logger log = LoggerFactory.getLogger(MemoryManager.class);
     private final ConversationMemory shortTermMemory;
     private final LongTermMemory longTermMemory;
     private final ContextCompressor compressor;
@@ -166,12 +169,12 @@ public class MemoryManager {
         }
 
         int beforeTokens = shortTermMemory.getTokenCount();
-        System.out.println("📦 上下文占用达到压缩阈值 (" + (int) (contextProfile.compressionTriggerRatio() * 100) + "%), 触发压缩...");
+        log.info("上下文占用达到压缩阈值（{}%），触发短期记忆压缩", (int) (contextProfile.compressionTriggerRatio() * 100));
         String summary = compressor.compress(shortTermMemory);
         if (summary != null) {
             int afterTokens = shortTermMemory.getTokenCount();
-            System.out.println("   压缩完成: " + beforeTokens + " → " + afterTokens + " tokens, 摘要: "
-                    + summary.substring(0, Math.min(100, summary.length())) + "...");
+            String preview = summary.substring(0, Math.min(100, summary.length()));
+            log.info("短期记忆压缩完成: {} -> {} tokens, summaryPreview={}", beforeTokens, afterTokens, preview);
         }
         return summary != null;
     }
