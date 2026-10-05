@@ -54,7 +54,7 @@ public class ToolCallRenderer {
         // 只有一种 toolCall
         if (grouped.size() == 1) {
             var entry = grouped.entrySet().iterator().next();
-            String label = toolLabel(entry.getKey(), entry.getValue().size());
+            String label = toolCollapsedLabel(entry.getKey(), entry.getValue());
 
             return AnsiStyle.subtle("⏵ " + stripPrefixIcon(label) + " (ctrl+o to expand)");
         }
@@ -93,6 +93,28 @@ public class ToolCallRenderer {
             case "web_fetch" -> "📰 抓取 " + count + " 个网页";
             case "save_memory" -> "💾 保存长期记忆 " + count + " 条";
             default -> toolName.startsWith("mcp__") ? formatMcpLabel(toolName, count) : "🔧 " + toolName + " × " + count;
+        };
+    }
+
+    private static String toolCollapsedLabel(String toolName, List<ToolCall> calls) {
+        int count = calls == null ? 0 : calls.size();
+        String label = toolLabel(toolName, count);
+        if (count != 1 || calls.isEmpty()) {
+            return label;
+        }
+
+        String detail = extractKeyParam(toolName, calls.get(0).function().arguments());
+        if (detail.isBlank()) {
+            return label;
+        }
+        return switch (toolName) {
+            case "web_search" -> "🌐 WebSearch(\"" + detail + "\")";
+            case "web_fetch" -> "📰 WebFetch(" + compactUrl(detail) + ")";
+            case "search_code" -> "🔍 SearchCode(\"" + detail + "\")";
+            case "read_file" -> "📖 ReadFile(" + detail + ")";
+            case "list_dir" -> "📂 ListDir(" + detail + ")";
+            case "execute_command" -> "⚡ Shell(" + detail + ")";
+            default -> label + " · " + detail;
         };
     }
 
@@ -150,5 +172,15 @@ public class ToolCallRenderer {
             }
             return argsJson.length() > 80 ? argsJson.substring(0, 77) + "..." : argsJson;
         }
+    }
+
+    private static String compactUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return "";
+        }
+        String value = url.trim()
+                .replaceFirst("^https?://", "")
+                .replaceFirst("/+$", "");
+        return value.length() > 80 ? value.substring(0, 77) + "..." : value;
     }
 }
