@@ -14,6 +14,8 @@ import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -33,6 +35,7 @@ public class MemoryManager {
     private final MemoryRetriever retriever;
     private TokenBudget tokenBudget;
     private ContextProfile contextProfile;
+    private String currentProject;
 
     // 工具调用结果在记忆中保存的最大长度
     private static final int MAX_TOOL_RESULT_CHARS = 500;
@@ -52,11 +55,19 @@ public class MemoryManager {
         this.compressor = new ContextCompressor(llmClient);
         this.retriever = new MemoryRetriever(shortTermMemory, this.longTermMemory);
         this.tokenBudget = new TokenBudget(contextProfile.maxContextWindow());
+        this.currentProject = defaultProjectKey();
     }
 
     public void setLlmClient(LlmClient llmClient) {
         this.compressor.setLlmClient(llmClient);
         applyContextProfile(ContextProfile.from(llmClient));
+    }
+
+    public void setProjectPath(String projectPath) {
+        if (projectPath == null || projectPath.isBlank()) {
+            return;
+        }
+        this.currentProject = normalizeProjectKey(projectPath);
     }
 
     public void applyContextProfile(ContextProfile contextProfile) {
@@ -123,11 +134,19 @@ public class MemoryManager {
      * 存储关键事实到长期记忆
      */
     public void storeFact(String fact) {
+        storeFact(fact, "project");
+    }
+
+    public void storeFact(String fact, String scope) {
+        String normalizedScope = normalizeScope(scope);
+        Map<String, String> metadata = "global".equals(normalizedScope)
+                ? Map.of("source", "fact", "scope", "global")
+                : Map.of("source", "fact", "scope", "project", "project", currentProject);
         MemoryEntry entry = new MemoryEntry(
                 "fact-" + UUID.randomUUID().toString().substring(0, 8),
                 fact,
                 MemoryType.FACT,
-                Map.of("source", "fact"),
+                metadata,
                 MemoryEntry.estimateTokens(fact)
         );
         longTermMemory.store(entry);
@@ -140,11 +159,24 @@ public class MemoryManager {
         return retriever.retrieve(query, limit);
     }
 
+    public List<MemoryEntry> listLongTerm() {
+        return longTermMemory.getAll();
+    }
+
+    public List<MemoryEntry> searchLongTerm(String query, int limit) {
+        return longTermMemory.search(query, limit, currentProject);
+    }
+
+    public boolean deleteLongTerm(String id) {
+        return longTermMemory.delete(id);
+    }
+
+
     /**
      * 构建上下文
      */
     public String buildContextForQuery(String query, int maxTokens) {
-        return retriever.buildContextForQuery(query, maxTokens);
+        return retriever.buildContextForQuery(query, maxTokens, currentProject);
     }
 
     /**
@@ -201,5 +233,29 @@ public class MemoryManager {
                 shortTermMemory.getStatusSummary() + "\n" +
                 longTermMemory.getStatusSummary() + "\n" +
                 tokenBudget.getUsageReport();
+    }
+
+    private static String normalizeScope(String scope) {
+        if (scope == null || scope.isBlank()) {
+            return "project";
+        }
+        String normalized = scope.trim().toLowerCase();
+        return "global".equals(normalized) ? "global" : "project";
+    }
+
+    private static String defaultProjectKey() {
+        return normalizeProjectKey(System.getProperty("user.dir"));
+    }
+
+    private static String normalizeProjectKey(String path) {
+        try {
+            Path candidate = Path.of(path).toAbsolutePath().normalize();
+            if (Files.exists(candidate)) {
+                return candidate.toRealPath().toString();
+            }
+            return candidate.toString();
+        } catch (Exception e) {
+            return Path.of(path).toAbsolutePath().normalize().toString();
+        }
     }
 }

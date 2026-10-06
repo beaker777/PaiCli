@@ -37,6 +37,8 @@ import com.paicode.mcp.constant.McpServerStatus;
 import com.paicode.mcp.service.manage.McpServer;
 import com.paicode.mcp.service.manage.McpServerManager;
 import com.paicode.mcp.service.mention.AtMentionExpander;
+import com.paicode.memory.entity.MemoryEntry;
+import com.paicode.memory.service.memorize.LongTermMemory;
 import com.paicode.plan.entity.ExecutionPlan;
 import com.paicode.agent.PlanAndExecute.service.PlanReviewHandler;
 import com.paicode.policy.entity.AuditEntry;
@@ -345,6 +347,12 @@ public class Main {
 
                 // 处理特殊命令
                 ParsedCommand command = CliCommandParser.parse(input);
+                boolean submittedInputRendered = false;
+                if (command.type() != CommandType.NONE) {
+                    renderer.beginTurn();
+                    printSubmittedInput(renderer, ui, input);
+                    submittedInputRendered = true;
+                }
                 switch (command.type()) {
                     case UNKNOWN_COMMAND -> {
                         ui.println("未知命令: " + command.payload());
@@ -381,10 +389,14 @@ public class Main {
                         continue;
                     }
                     case MEMORY_STATUS -> {
-                        ui.println("记忆状态: ");
-                        ui.println(reactAgent.getSystemStatus());
+                        ui.println("📋 记忆系统状态：");
+                        ui.println(reactAgent.getMemoryManager().getSystemStatus());
+                        ui.println("   当前项目作用域: " + reactAgent.getMemoryManager().getCurrentProject());
+                        ui.println("   /memory list - 查看长期记忆");
+                        ui.println("   /memory search <关键词> - 搜索当前项目可见长期记忆");
+                        ui.println("   /memory delete <id> - 删除单条长期记忆");
                         ui.println("   /memory clear - 清空长期记忆");
-                        ui.println("   /save <事实> - 手动保存到长期记忆");
+                        ui.println("   /save <事实> - 保存项目级长期记忆；/save --global <事实> 保存全局记忆");
                         ui.println();
                         continue;
                     }
@@ -395,12 +407,40 @@ public class Main {
                         continue;
                     }
                     case MEMORY_SAVE -> {
-                        String fact = command.payload();
-                        if (fact == null || fact.isBlank()) {
-                            ui.println("请提供需要保存的内容, 例如: /save 这个项目使用 Java17");
+                        MemorySaveRequest saveRequest = parseMemorySave(command.payload());
+                        if (saveRequest.fact().isEmpty()) {
+                            ui.println("❌ 请提供要保存的内容，例如 /save 这个项目使用Java 17，或 /save --global 默认用中文回答\n");
                         } else {
-                            reactAgent.getMemoryManager().storeFact(fact);
-                            ui.println("已保存到长期记忆: " + fact + "\n");
+                            reactAgent.getMemoryManager().storeFact(saveRequest.fact(), saveRequest.scope());
+                            ui.println("💾 已保存到长期记忆(" + saveRequest.scope() + "): " + saveRequest.fact() + "\n");
+                        }
+                        continue;
+                    }
+                    case MEMORY_LIST -> {
+                        List<MemoryEntry> entries = reactAgent.getMemoryManager().listLongTerm();
+                        ui.println(formatMemoryEntries("📋 长期记忆列表", entries));
+                        ui.println();
+                        continue;
+                    }
+                    case MEMORY_SEARCH -> {
+                        String query = command.payload();
+                        if (query == null || query.isBlank()) {
+                            ui.println("❌ 请提供搜索关键词，例如 /memory search Chrome 登录态\n");
+                        } else {
+                            List<MemoryEntry> entries = reactAgent.getMemoryManager().searchLongTerm(query, 20);
+                            ui.println(formatMemoryEntries("🔎 长期记忆搜索: " + query, entries));
+                            ui.println();
+                        }
+                        continue;
+                    }
+                    case MEMORY_DELETE -> {
+                        String id = command.payload();
+                        if (id == null || id.isBlank()) {
+                            ui.println("❌ 请提供要删除的记忆 id，例如 /memory delete fact-abcd1234\n");
+                        } else if (reactAgent.getMemoryManager().deleteLongTerm(id)) {
+                            ui.println("🗑️ 已删除长期记忆: " + id + "\n");
+                        } else {
+                            ui.println("📭 未找到长期记忆: " + id + "\n");
                         }
                         continue;
                     }
@@ -580,6 +620,7 @@ public class Main {
                         // 同步项目路径到 toolRegistry
                         String absPath = new File(indexPath).getAbsolutePath();
                         reactAgent.getToolRegistry().setProjectPath(absPath);
+                        reactAgent.getMemoryManager().setProjectPath(absPath);
                         continue;
                     }
                     case SEARCH_CODE -> {
@@ -655,11 +696,9 @@ public class Main {
                 if (!(renderer instanceof InlineRenderer)) {
                     ui.println();
                 }
-                renderer.beginTurn();
-                if (renderer instanceof InlineRenderer inline) {
-                    inline.printSubmittedPrompt(submittedInput);
-                } else {
-                    printSubmittedPrompt(ui, submittedInput);
+                if (!submittedInputRendered) {
+                    renderer.beginTurn();
+                    printSubmittedInput(renderer, ui, submittedInput);
                 }
 
                 final String taskInput = input;
@@ -2107,4 +2146,64 @@ public class Main {
         return null;
     }
 
+    static void printSubmittedInput(Renderer renderer, PrintStream out, String input) {
+        if (renderer instanceof InlineRenderer inline) {
+            inline.printSubmittedPrompt(input);
+        } else {
+            printSubmittedPrompt(out, input);
+        }
+    }
+
+    private static MemorySaveRequest parseMemorySave(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.regionMatches(true, 0, "--global ", 0, 9)) {
+            return new MemorySaveRequest(value.substring(9).trim(), "global");
+        }
+        if (value.equalsIgnoreCase("--global")) {
+            return new MemorySaveRequest("", "global");
+        }
+        if (value.regionMatches(true, 0, "--project ", 0, 10)) {
+            return new MemorySaveRequest(value.substring(10).trim(), "project");
+        }
+        if (value.equalsIgnoreCase("--project")) {
+            return new MemorySaveRequest("", "project");
+        }
+        return new MemorySaveRequest(value, "project");
+    }
+
+    private static String formatMemoryEntries(String title, List<MemoryEntry> entries) {
+        StringBuilder sb = new StringBuilder(title).append("：\n");
+        if (entries == null || entries.isEmpty()) {
+            return sb.append("📭 没有匹配的长期记忆。").toString();
+        }
+        for (MemoryEntry entry : entries) {
+            String scope = LongTermMemory.scopeOf(entry);
+            String project = entry.getMetadata().get("project");
+            sb.append("- ")
+                    .append(entry.getId())
+                    .append(" [").append(scope).append("]");
+            if ("project".equals(scope) && project != null && !project.isBlank()) {
+                sb.append(" ").append(shortenPath(project));
+            }
+            sb.append(" · ").append(entry.getTimestamp()).append("\n")
+                    .append("  ").append(entry.getContent()).append("\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private static String shortenPath(String path) {
+        if (path == null || path.isBlank()) {
+            return "";
+        }
+        try {
+            Path p = Path.of(path);
+            int count = p.getNameCount();
+            if (count <= 3) {
+                return path;
+            }
+            return "..." + File.separator + p.subpath(count - 3, count);
+        } catch (Exception e) {
+            return path;
+        }
+    }
 }

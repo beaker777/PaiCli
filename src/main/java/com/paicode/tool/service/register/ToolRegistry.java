@@ -59,7 +59,7 @@ public class ToolRegistry {
     private BrowserConnector browserConnector;
 
     // 记忆存储
-    private Consumer<String> memorySaver;
+    private BiConsumer<String, String> memorySaver;
 
     // skill 注册
     private SkillRegistry skillRegistry;
@@ -108,6 +108,14 @@ public class ToolRegistry {
         register(MemoryTools.create(memorySaver));
         register(SkillTools.create(skillRegistry, skillContextBuffer));
         register(SnapshotTools.create(snapshotService));
+    }
+
+    public void setMemorySaver(Consumer<String> memorySaver) {
+        this.memorySaver = memorySaver == null ? null : (fact, scope) -> memorySaver.accept(fact);
+    }
+
+    public void setScopedMemorySaver(BiConsumer<String, String> memorySaver) {
+        this.memorySaver = memorySaver;
     }
 
     private void register(List<ToolDefinition> toolList) {

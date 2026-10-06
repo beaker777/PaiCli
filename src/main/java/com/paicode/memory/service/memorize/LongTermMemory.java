@@ -71,15 +71,19 @@ public class LongTermMemory implements Memory {
 
     @Override
     public List<MemoryEntry> search(String query, int limit) {
+        return search(query, limit, null);
+    }
+
+    public List<MemoryEntry> search(String query, int limit, String projectKey) {
         Set<String> queryTokens = MemoryQueryTokenizer.tokenize(query);
 
         // 记忆内容或者 metadata 匹配均可
         return entries.values().stream()
+                .filter(entry -> isVisibleInProject(entry, projectKey))
                 .filter(entry -> {
                     if (MemoryQueryTokenizer.matches(entry.getContent(), queryTokens)) {
                         return true;
                     }
-
                     return entry.getMetadata().values().stream()
                             .anyMatch(value -> MemoryQueryTokenizer.matches(value, queryTokens));
                 })
@@ -90,6 +94,12 @@ public class LongTermMemory implements Memory {
     @Override
     public List<MemoryEntry> getAll() {
         return new ArrayList<>(entries.values());
+    }
+
+    public List<MemoryEntry> getAll(String projectKey) {
+        return entries.values().stream()
+                .filter(entry -> isVisibleInProject(entry, projectKey))
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -141,6 +151,23 @@ public class LongTermMemory implements Memory {
                 typeCounts.getOrDefault(MemoryType.FACT, 0L),
                 typeCounts.getOrDefault(MemoryType.SUMMARY, 0L),
                 typeCounts.getOrDefault(MemoryType.TOOL_RESULT, 0L));
+    }
+
+    public static boolean isVisibleInProject(MemoryEntry entry, String projectKey) {
+        String scope = scopeOf(entry);
+        if ("global".equals(scope)) {
+            return true;
+        }
+        String entryProject = entry.getMetadata().get("project");
+        return projectKey != null && !projectKey.isBlank() && Objects.equals(entryProject, projectKey);
+    }
+
+    public static String scopeOf(MemoryEntry entry) {
+        String scope = entry.getMetadata().get("scope");
+        if ("project".equalsIgnoreCase(scope)) {
+            return "project";
+        }
+        return "global";
     }
 
     private void loadFromDisk() {

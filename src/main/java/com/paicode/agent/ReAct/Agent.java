@@ -86,7 +86,8 @@ public class Agent {
         memoryManager = new MemoryManager(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
         this.toolRegistry.setMemorySaver(memoryManager::storeFact);
-
+        this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
+        this.toolRegistry.setScopedMemorySaver(memoryManager::storeFact);
         conversationHistory.add(Message.system(buildSystemPrompt("")));
     }
 
@@ -427,7 +428,7 @@ public class Agent {
 
         String fact = ExplicitMemoryHints.browserLoginFact(userInput, recentTexts);
         if (fact != null && !fact.isBlank()) {
-            memoryManager.storeFact(fact);
+            memoryManager.storeFact(fact, "global");
         }
     }
 

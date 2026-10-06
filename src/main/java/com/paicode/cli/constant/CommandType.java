@@ -46,6 +46,15 @@ public enum CommandType {
     // 清空记忆
     MEMORY_CLEAR,
 
+    // 列出记忆
+    MEMORY_LIST,
+
+    // 删除记忆
+    MEMORY_DELETE,
+
+    // 搜索记忆
+    MEMORY_SEARCH,
+
     // 建立索引
     INDEX_CODE,
 

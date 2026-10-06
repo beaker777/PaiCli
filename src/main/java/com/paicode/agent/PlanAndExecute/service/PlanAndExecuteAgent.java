@@ -105,7 +105,8 @@ public class PlanAndExecuteAgent {
         this.memoryManager = memoryManager != null ? memoryManager : new MemoryManager(llmClient);
         this.historyCompactor = new ConversationHistoryCompactor(llmClient);
         this.toolRegistry.setContextProfile(memoryManager.getContextProfile());
-        this.toolRegistry.setMemorySaver(memoryManager::storeFact);
+        this.memoryManager.setProjectPath(this.toolRegistry.getProjectPath());
+        this.toolRegistry.setScopedMemorySaver(this.memoryManager::storeFact);
         this.out = out == null ? deferredSystemOut() : out;
     }
 
