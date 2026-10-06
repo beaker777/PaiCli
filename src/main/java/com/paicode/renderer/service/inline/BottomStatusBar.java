@@ -4,6 +4,7 @@ import com.paicode.renderer.entity.StatusInfo;
 import org.jline.terminal.Terminal;
 import org.jline.utils.AttributedString;
 import org.jline.utils.AttributedStyle;
+import org.jline.utils.InfoCmp;
 import org.jline.utils.Status;
 
 import java.io.PrintStream;
@@ -66,6 +67,7 @@ public class BottomStatusBar implements AutoCloseable {
     /** 在即将读取输入时，把状态区画在 prompt 下方并把光标移回 prompt 行。 */
     public void prepareInputLine() {
         renderDock();
+        moveCursorToDockInputRow();
     }
 
     /** 输入提交后清掉 inline 状态区和它下面的空白，让下一段 transcript 紧跟输入行。 */
@@ -84,6 +86,25 @@ public class BottomStatusBar implements AutoCloseable {
         synchronized (out) {
             dock.update(formatStatusLines(info, cols));
         }
+    }
+
+    private void moveCursorToDockInputRow() {
+        StatusInfo info = current;
+        if (info == null || closed || !started) {
+            return;
+        }
+        int rows = TerminalCapabilities.safeSize(terminal).getRows();
+        int cols = TerminalCapabilities.safeSize(terminal).getColumns();
+        int dockRows = formatStatusLines(info, cols).size() + 1; // JLine Status border.
+        int inputRow = inputDockRow(rows, dockRows);
+        synchronized (out) {
+            terminal.puts(InfoCmp.Capability.cursor_address, inputRow, 0);
+            terminal.flush();
+        }
+    }
+
+    static int inputDockRow(int terminalRows, int dockRows) {
+        return Math.max(0, terminalRows - Math.max(0, dockRows) - 1);
     }
 
     @Override

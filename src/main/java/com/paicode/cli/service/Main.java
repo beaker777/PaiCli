@@ -214,7 +214,7 @@ public class Main {
             configureJLineInteractiveWidgets(lineReader);
 
             // JLine-first：启动输出、命令输出、Agent 流式内容都走同一条 Renderer.stream() 通道。
-            // 注意：状态区必须等首屏打印后再 start/update；否则启动期输出与输入区布局会互相抢光标。
+            // inline 首屏要挂到 LineReader 首次初始化回调里，避免在 readLine 接管屏幕前用裸输出抢光标。
             Renderer renderer = RendererFactory.create(RendererFactory.resolveMode(), terminal);
             RendererHitlHandler rendererHitl = new RendererHitlHandler(renderer, hitlHandler.isEnabled());
             hitlHandler.setDelegate(rendererHitl);
@@ -222,6 +222,8 @@ public class Main {
                 inline.bindLineReader(lineReader);
             }
             PrintStream ui = renderer.stream();
+            renderer.start();
+            renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, null));
 
             // 创建 mcp 管理器
             String startupNote = "";
@@ -268,9 +270,13 @@ public class Main {
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             reactAgent.setSkillRegistry(skillRegistry);
             reactAgent.setSkillContextBuffer(skillContextBuffer);
-            printStartupScreen(ui, startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote));
-            renderer.start();
             renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+            StartupScreenInfo startupScreenInfo = startupScreenInfo(llmClient, mcpServerManager, skillRegistry, startupNote);
+            if (renderer instanceof InlineRenderer inline) {
+                inline.installStartupScreen(startupScreenLines(startupScreenInfo));
+            } else {
+                printStartupScreen(ui, startupScreenInfo);
+            }
             boolean nextTaskUsePlanMode = false;
             boolean nextTaskUseTeamMode = false;
 
@@ -314,6 +320,9 @@ public class Main {
                 } catch (EndOfFileException e) {
                     // ctrl + d 退出
                     break;
+                }
+                if (renderer instanceof InlineRenderer inline) {
+                    inline.clearAcceptedInput(promptInput.text());
                 }
 
                 if (promptInput.canceled()) {
@@ -642,11 +651,18 @@ public class Main {
                 // 运行 Agent, 调用 Mcp Resource
                 String submittedInput = input;
                 input = mentionExpander.expand(input);
-                ui.println();
+                input = localPathMentionExpander.expand(input);
+                if (!(renderer instanceof InlineRenderer)) {
+                    ui.println();
+                }
                 renderer.beginTurn();
-                printSubmittedPrompt(ui, submittedInput);
+                if (renderer instanceof InlineRenderer inline) {
+                    inline.printSubmittedPrompt(submittedInput);
+                } else {
+                    printSubmittedPrompt(ui, submittedInput);
+                }
 
-                String taskInput = input;
+                final String taskInput = input;
                 Callable<String> runTask;
                 String snapshotMode;
                 if (nextTaskUsePlanMode || command.type() == CommandType.SWITCH_PLAN) {
@@ -760,7 +776,6 @@ public class Main {
             return;
         }
         out.println(AnsiStyle.userMessageBlock(visible, terminalColumns()));
-        out.println();
     }
 
     private static int terminalColumns() {
@@ -1619,10 +1634,15 @@ public class Main {
     }
 
     private static void printStartupScreen(PrintStream out, StartupScreenInfo info) {
-        for (String line : startupBannerLines(info)) {
+        for (String line : startupScreenLines(info)) {
             out.println(line);
         }
-        out.println();
+    }
+
+    static List<String> startupScreenLines(StartupScreenInfo info) {
+        List<String> lines = new ArrayList<>(startupBannerLines(info));
+        lines.add("");
+        return lines;
     }
 
     static List<String> startupBannerLines() {
