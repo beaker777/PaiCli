@@ -430,4 +430,8 @@ public class ToolRegistry {
         this.snapshotService = snapshotService == null ? SnapshotService.forProject(Path.of(projectPath)) : snapshotService;
         this.customSnapshotService = snapshotService != null;
     }
+
+    public boolean hasTool(String name) {
+        return tools.containsKey(name);
+    }
 }
