@@ -383,6 +383,7 @@ public class Main {
                         reactAgent.clearHistory();
                         hitlHandler.clearApprovedAll();
                         ui.println("对话历史已清空, 长期记忆不变\n");
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case HISTORY_CLEAR -> {
@@ -395,7 +396,7 @@ public class Main {
                             handleConfigPalette(renderer, config, llmClient, hitlHandler, skillRegistry);
                         } else {
                             ui.println(handleConfigCommand(config, command.payload()));
-                            renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                            renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         }
                         continue;
                     }
@@ -534,7 +535,7 @@ public class Main {
                             ui.println("   /hitl on  - 启用人工审批");
                             ui.println("   /hitl off - 关闭人工审批\n");
                         }
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case POLICY_STATUS -> {
@@ -563,7 +564,7 @@ public class Main {
                     }
                     case MCP_RESTART -> {
                         printMcpCommandResult(ui, mcpServerManager.restart(command.payload()));
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case MCP_LOGS -> {
@@ -572,12 +573,12 @@ public class Main {
                     }
                     case MCP_DISABLE -> {
                         printMcpCommandResult(ui, mcpServerManager.disable(command.payload()));
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case MCP_ENABLE -> {
                         printMcpCommandResult(ui, mcpServerManager.enable(command.payload()));
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case MCP_RESOURCES -> {
@@ -598,12 +599,12 @@ public class Main {
                     }
                     case SKILL_ON -> {
                         ui.println(SkillCommandHandler.enable(skillRegistry, skillStateStore, command.payload()));
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case SKILL_OFF -> {
                         ui.println(SkillCommandHandler.disable(skillRegistry, skillStateStore, command.payload()));
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case SKILL_RELOAD -> {
@@ -611,7 +612,7 @@ public class Main {
                         ui.println("🔄 已重新扫描 skill 目录");
                         ui.println(SkillCommandHandler.startupSummary(skillRegistry));
                         ui.println("✅ 下一轮 LLM 调用生效");
-                        renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                        renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                         continue;
                     }
                     case BROWSER -> {
@@ -747,12 +748,12 @@ public class Main {
                 }
 
                 SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
-                renderer.updateStatus(statusInfo(llmClient, hitlHandler, snapshotMode, mcpServerManager, skillRegistry));
+                renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                 String response = runWithCancelSupport(terminal,
                         ui,
                         () -> snapshotService.runTurn(snapshotMode, taskInput, runTask::call));
                 if (!"react".equals(snapshotMode)) {
-                    renderer.updateStatus(statusInfo(llmClient, hitlHandler, "idle", mcpServerManager, skillRegistry));
+                    renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
                 }
                 nextTaskUsePlanMode = false;
                 nextTaskUseTeamMode = false;
@@ -2042,6 +2043,14 @@ public class Main {
                 skillTotal,
                 note == null ? "" : note.trim()
         );
+    }
+
+    private static StatusInfo statusInfo(Agent reactAgent,
+                                         McpServerManager mcpServerManager,
+                                         SkillRegistry skillRegistry,
+                                         String phase) {
+        StatusInfo base = reactAgent.currentStatus(phase);
+        return base.withEnvironment(mcpStatusSummary(mcpServerManager), skillStatusSummary(skillRegistry));
     }
 
     private static StatusInfo statusInfo(LlmClient llmClient,

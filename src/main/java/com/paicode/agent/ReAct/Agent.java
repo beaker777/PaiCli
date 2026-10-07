@@ -174,7 +174,6 @@ public class Agent {
 
                 // 记录 Token 消耗
                 budget.recordTokens(response.inputTokens(), response.outputTokens(), response.cachedInputTokens());
-                pushStatus(budget, startNanos, "running");
 
                 // 如果存在调用工具
                 if (response.hasToolCalls()) {
@@ -200,6 +199,7 @@ public class Agent {
 
                     // 如果工具调用结果包含图片, 加入历史
                     appendImageToolMessages(results);
+                    pushStatus(budget, startNanos, "running");
 
                     continue;
                 }
@@ -382,6 +382,7 @@ public class Agent {
             renderer().updateStatus(StatusInfo.tokens(
                     model,
                     contextWindow,
+                    estimateCurrentContextTokens(),
                     budget == null ? 0L : budget.totalInputTokens(),
                     budget == null ? 0L : budget.totalOutputTokens(),
                     budget == null ? 0L : budget.totalCachedInputTokens(),
@@ -716,15 +717,35 @@ public class Agent {
 
     // 清空历史 (保留系统提示词), 不影响长期记忆
     public void clearHistory() {
-        Message systemPrompt = conversationHistory.get(0);
         conversationHistory.clear();
-        conversationHistory.add(systemPrompt);
+        conversationHistory.add(Message.system(buildSystemPrompt("")));
 
         // 清空短期记忆
         memoryManager.clearShortTerm();
+        if (skillContextBuffer != null) {
+            skillContextBuffer.clear();
+        }
     }
 
-    public void setLlmClient(LlmClient llmClient) {
+    /** 当前状态栏快照：ctx 表示下一轮请求仍会携带的上下文估算，不含累计 in/out 用量。 */
+    public StatusInfo currentStatus(String phase) {
+        String normalizedPhase = phase == null || phase.isBlank() ? "idle" : phase;
+        String model = llmClient == null ? "—" : llmClient.getModelName();
+        long contextWindow = llmClient == null ? 0L : llmClient.maxContextWindow();
+        boolean hitl = Boolean.TRUE.equals(hitlEnabledSupplier.get());
+        long contextTokens = estimateCurrentContextTokens();
+        if ("idle".equals(normalizedPhase)) {
+            return StatusInfo.idle(model, contextWindow, contextTokens, hitl);
+        }
+        return StatusInfo.active(model, contextWindow, contextTokens, hitl, normalizedPhase);
+    }
+
+    private long estimateCurrentContextTokens() {
+        long messageTokens = TokenBudget.estimateMessagesTokens(conversationHistory);
+        return Math.max(0L, messageTokens + estimateToolsSchemaTokens());
+    }
+
+        public void setLlmClient(LlmClient llmClient) {
         this.llmClient = llmClient;
         this.historyCompactor.setLlmClient(llmClient);
         this.memoryManager.setLlmClient(llmClient);
