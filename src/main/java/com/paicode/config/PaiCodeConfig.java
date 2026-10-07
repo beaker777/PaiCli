@@ -66,6 +66,7 @@ public class PaiCodeConfig {
             case "deepseek" -> "DEEPSEEK_API_KEY";
             case "step" -> "STEP_API_KEY";
             case "kimi" -> "KIMI_API_KEY";
+            case "freellmapi" -> "FREELLMAPI_API_KEY";
             default -> provider.toUpperCase() + "_API_KEY";
         };
 
@@ -98,6 +99,7 @@ public class PaiCodeConfig {
             case "glm" -> "GLM_MODEL";
             case "deepseek" -> "DEEPSEEK_MODEL";
             case "kimi" -> "KIMI_MODEL";
+            case "freellmapi" -> "FREELLMAPI_MODEL";
             default -> provider.toUpperCase() + "_MODEL";
         };
 
@@ -129,6 +131,7 @@ public class PaiCodeConfig {
         String envKey = switch (provider.toLowerCase()) {
             case "step" -> "STEP_BASE_URL";
             case "kimi" -> "KIMI_BASE_URL";
+            case "freellmapi" -> "FREELLMAPI_BASE_URL";
             default -> provider.toUpperCase() + "_BASE_URL";
         };
 

@@ -57,6 +57,11 @@ public interface Renderer extends AutoCloseable {
         return null;
     }
 
+    /** 当前输出区域可用列数。Markdown 表格等宽布局按这个值做收缩和换行。 */
+    default int terminalColumns() {
+        return 120;
+    }
+
     /**
      * 流式输出的目标 PrintStream。
      */

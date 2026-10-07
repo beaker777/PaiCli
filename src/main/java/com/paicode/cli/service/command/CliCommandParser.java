@@ -43,6 +43,10 @@ public class CliCommandParser {
             return new ParsedCommand(CommandType.CONFIG, null);
         }
 
+        if (trimmed.regionMatches(true, 0, "/config ", 0, 8)) {
+            return new ParsedCommand(CommandType.CONFIG, trimmed.substring(8).trim());
+        }
+
         if (trimmed.equalsIgnoreCase("/model")) {
             return new ParsedCommand(CommandType.SWITCH_MODEL, null);
         }

@@ -234,6 +234,7 @@ public abstract class AbstractOpenaiCompatibleClient implements LlmClient {
             msgNode.put("role", msg.role());
             appendMessageContent(msgNode, msg);
             if (shouldSendReasoningContentInRequestHistory()
+                    && "assistant".equals(msg.role())
                     && msg.reasoningContent() != null && !msg.reasoningContent().isBlank()) {
                 msgNode.put("reasoning_content", msg.content());
             }

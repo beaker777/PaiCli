@@ -72,7 +72,11 @@ public class ToolRegistry {
     private SnapshotService snapshotService = SnapshotService.forProject(Path.of(projectPath));
     private boolean customSnapshotService;
 
+    // 记忆保存
     private BiConsumer<String, String[]> writeFileObserver = (p, ba) -> {};
+
+    private volatile String currentProvider = "";
+    private volatile String currentModel = "";
 
     private final WebSearchTools webSearchTools = new WebSearchTools();
     private final FileTools fileTools = new FileTools(() -> pathGuard);
@@ -116,6 +120,11 @@ public class ToolRegistry {
 
     public void setScopedMemorySaver(BiConsumer<String, String> memorySaver) {
         this.memorySaver = memorySaver;
+    }
+
+    public void setCurrentModel(String provider, String model) {
+        this.currentProvider = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
+        this.currentModel = model == null ? "" : model.trim().toLowerCase(Locale.ROOT);
     }
 
     private void register(List<ToolDefinition> toolList) {

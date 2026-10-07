@@ -66,6 +66,7 @@ public class PaiCodeCompleter implements Completer {
     private void completeSlashCommand(ParsedLine line, List<Candidate> candidates) {
         String input = line.line() == null ? "" : line.line();
         if (completeModel(input, candidates)
+                || completeConfig(input, candidates)
                 || completeMcp(input, candidates)
                 || completeSkill(input, candidates)
                 || completeTask(input, candidates)
@@ -112,7 +113,8 @@ public class PaiCodeCompleter implements Completer {
                 option("glm-5v-turbo", "GLM-5V 多模态"),
                 option("deepseek", "DeepSeek，读取配置模型"),
                 option("step", "StepFun，读取配置模型"),
-                option("kimi", "Kimi/Moonshot，读取配置模型"));
+                option("kimi", "Kimi/Moonshot，读取配置模型"),
+                option("freellmapi", "本地 FreeLLMAPI，读取配置模型"));
         return true;
     }
 
@@ -140,6 +142,42 @@ public class PaiCodeCompleter implements Completer {
         if (List.of("restart", "logs", "disable", "enable", "resources", "prompts").contains(sub)) {
             String prefix = payload.endsWith(" ") ? "" : parts.length >= 2 ? parts[parts.length - 1] : "";
             addServerCandidates(candidates, prefix);
+            return true;
+        }
+        return true;
+    }
+
+    private boolean completeConfig(String input, List<Candidate> candidates) {
+        if (!input.equalsIgnoreCase("/config") && !input.regionMatches(true, 0, "/config ", 0, 8)) {
+            return false;
+        }
+
+        // 补全命令内容
+        String payload = input.length() <= 8 ? "" : input.substring(8);
+        String[] parts = payload.trim().isEmpty() ? new String[0] : payload.trim().split("\\s+");
+        if (parts.length <= 1 && !payload.endsWith(" ")) {
+            addMatching(candidates, "配置", payload,
+                    option("provider ", "配置 provider", "/config provider <name>"));
+            return true;
+        }
+
+        // 补全 provider 配置命令
+        if (parts.length >= 1 && "provider".equalsIgnoreCase(parts[0])) {
+            String prefix = payload.endsWith(" ") ? "" : parts[parts.length - 1];
+            if (parts.length <= 2 && !payload.contains("--")) {
+                addMatching(candidates, "Provider", prefix,
+                        option("freellmapi ", "本地 FreeLLMAPI"),
+                        option("glm ", "GLM"),
+                        option("deepseek ", "DeepSeek"),
+                        option("step ", "StepFun"),
+                        option("kimi ", "Kimi/Moonshot"));
+                return true;
+            }
+            addMatching(candidates, "配置项", prefix,
+                    option("--base-url ", "OpenAI-compatible base URL"),
+                    option("--api-key ", "API Key"),
+                    option("--model ", "模型名"),
+                    option("--default", "设为默认 provider"));
             return true;
         }
         return true;

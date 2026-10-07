@@ -302,6 +302,11 @@ public class InlineRenderer implements Renderer {
         return new SlashPalette(out, terminal).open(title, items);
     }
 
+    @Override
+    public int terminalColumns() {
+        return Math.max(40, TerminalCapabilities.safeSize(terminal).getColumns());
+    }
+
     /**
      * 是否启动了状态栏
      */
